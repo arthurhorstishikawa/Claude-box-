@@ -18,6 +18,7 @@ import {
 import { Circulation } from './circulation';
 import { LatLonGrid, regrid } from './grid';
 import { plantAlbedo } from './life';
+import { Civilization } from './civilization';
 import { History } from './history';
 import { computeInsolation, dailyMean, type Illuminator } from './insolation';
 import { StormSystem } from './storms';
@@ -241,6 +242,7 @@ export class TerrestrialClimate {
   private C2!: Float64Array;
   private oceanMask!: Float64Array;
   private kEocean!: Float64Array;
+  private wsCache!: Float64Array;
   private kEland!: Float64Array;
   private A1!: Float64Array;
   private R1!: Float64Array;
@@ -269,6 +271,11 @@ export class TerrestrialClimate {
   history = new History();
   stats: ClimateStats;
   mode: ClimateMode = 'seasonal';
+  civ: Civilization | null = null;
+  /** True while settling the initial state: no biosphere carbon exchange. */
+  spinningUp = false;
+  /** Clock for biosphere emergence checks (s of habitable, living conditions). */
+  lifeClock = 0;
   private anom!: Float64Array;
   private simpleT: Float64Array | null = null;
   private historyClock = 0;
@@ -319,6 +326,7 @@ export class TerrestrialClimate {
       for (let k = 0; k < this.grid.N; k++) {
         this.w[k] = 0.7 * this.wsat(this.Ts[k], pDry0) * scale;
         this.soil[k] = 60;
+        this.pAnnual[k] = (2 * smoothstep(255, 295, this.Ts[k])) / 86400;
         this.cloud[k] = this.vol.id === 'H2O' ? 0.55 : 0.1;
         if (this.biosphere) this.veg[k] = 0.5 * smoothstep(255, 285, this.Ts[k]);
       }
@@ -418,6 +426,7 @@ export class TerrestrialClimate {
     this.oceanMask = f();
     this.anom = f();
     this.kEocean = f();
+    this.wsCache = f();
     this.kEland = f();
     this.A1 = f();
     this.R1 = f();
@@ -829,7 +838,7 @@ export class TerrestrialClimate {
         let aSurf = fo * (oceanAlb + (seaIceAlb - oceanAlb) * iceC) + fl * landAlb;
         if (molten) aSurf = 0.1;
         const CF = this.cloud[k];
-        const aCloud = 0.32 * CF;
+        const aCloud = 0.345 * CF;
         const sky = 1 - (1 - skyR) * (1 - aCloud);
         const ap = sky + ((1 - sky) * (1 - sky) * aSurf) / (1 - sky * aSurf);
         this.albedo[k] = ap;
@@ -842,15 +851,20 @@ export class TerrestrialClimate {
         const tau = (tauDry + tauV + 0.25 * CF + 0.05 * this.aerosol) * pz;
         tauSum += tau * grid.cellArea[j];
         const wsK = hydro ? this.wsat(T1, pDry) : 1;
+        this.wsCache[k] = wsK;
         const moist = hydro && vol.id === 'H2O' ? smoothstep(0.3, 0.7, this.w[k] / Math.max(wsK, 1e-9)) * smoothstep(275, 300, T1) * (hasLiquidReservoir ? 1 : 0.3) : 0;
-        const olrAt = (T: number) => {
-          const gray = (SIGMA * T * T * T * T) / (1 + 0.75 * tau);
-          if (moist <= 0) return gray;
+        // OLR and its temperature derivative (analytic; gray atmosphere with a soft moist cap).
+        const T1sq = T1 * T1;
+        const gray = (SIGMA * T1sq * T1sq) / (1 + 0.75 * tau);
+        let OLR0 = gray;
+        let B = (4 * gray) / T1;
+        if (moist > 0) {
           const capped = Math.pow(Math.pow(gray, -8) + Math.pow(olrLim, -8), -1 / 8);
-          return gray + (capped - gray) * moist;
-        };
-        const OLR0 = olrAt(T1);
-        const B = Math.max(0.05, olrAt(T1 + 0.5) - olrAt(T1 - 0.5));
+          const dcap = Math.pow(capped / gray, 9) * B;
+          OLR0 = gray + (capped - gray) * moist;
+          B = B + (dcap - B) * moist;
+        }
+        B = Math.max(0.05, B);
         this.olr[k] = OLR0;
         // --- evaporation (linearised in T1)
         let LE0 = 0;
@@ -873,8 +887,7 @@ export class TerrestrialClimate {
           // Latent cooling uses the actual evaporation of the previous step (consistent with the
           // latent heating from precipitation), linearised in temperature for stability.
           LE0 = L * this.evap[k];
-          const dws = this.wsat(T1 + 0.5, pDry) - this.wsat(T1 - 0.5, pDry);
-          dLE = this.w[k] < wsK ? L * kE * Math.max(0, dws) : 0;
+          dLE = this.w[k] < wsK ? L * kE * wsK * (vol.Lvap / (vol.Rv * T1sq)) : 0;
           // Evaporation potential is limited by the energy the surface receives (applied in hydrology).
           const energyCap = Math.max(0, 0.6 * (asr + Fint)) + 0.02 * SIGMA * T1 * T1 * T1 * T1;
           this.ecap[k] = energyCap / L;
@@ -1200,7 +1213,7 @@ export class TerrestrialClimate {
     const Om = Math.max(Math.abs(ctx.omega), Number.isFinite(ctx.orbitPeriod) ? (2 * Math.PI) / ctx.orbitPeriod : 1e-8, 1e-9);
     const Katm = clamp(2.0e6 * (g / G_EARTH) * Math.pow(0.029 / molar, 2) * Math.pow(7.29e-5 / Om, 2), 1e4, 3e9);
     // Vapour column at fixed relative humidity, limited by the planet's inventory.
-    const vapour = (T: number) => (water && hasAtm ? 0.65 * this.wsat(T, pDry) : 0);
+    const vapour = (T: number) => (water && hasAtm ? 0.66 * this.wsat(T, pDry) : 0);
     let vapTot = 0;
     for (let b = 0; b < nB; b++) vapTot += vapour(bT[b]) * bArea[b];
     const vapScale = water ? Math.min(1, this.waterTotal / Math.max(vapTot * A, 1e-30)) : 0;
@@ -1221,6 +1234,13 @@ export class TerrestrialClimate {
     const olrB = new Float64Array(nB);
     const alb = new Float64Array(nB);
     const kapB = new Float64Array(nB);
+    const oceanLeft = this.oceanMass() > 0;
+    let globalRunaway = false;
+    {
+      let asrG = 0;
+      for (let b = 0; b < nB; b++) asrG += bIns[b] * (1 - 0.3) * transmit * bArea[b];
+      globalRunaway = asrG + ctx.internalHeat > olrLim * 0.98 || (this.stats.runaway && asrG > olrLim * 0.85);
+    }
     for (let pass = 0; pass < 3; pass++) {
       for (let b = 0; b < nB; b++) {
         const moistBoost = 1 + 0.3 * Math.min(2, (vapour(Tn[b]) * vapScale) / 25);
@@ -1229,12 +1249,13 @@ export class TerrestrialClimate {
       for (let b = 0; b < nB; b++) {
         const T = Tn[b];
         const fo = bOcean[b];
-        const iceO = water ? smoothstep(Tf + 2, Tf - 10, T) : 0;
+        // Annual-mean temperatures: albedo-relevant (sunlit-season) snow and sea ice need colder means.
+        const iceO = water ? smoothstep(Tf - 2, Tf - 16, T) : 0;
         // Seasonal snow needs a hydrological cycle; otherwise only existing ice caps count.
-        const snowL = Math.max(Math.min(1, bSnow[b] / Math.max(1 - fo, 1e-3)), wetWorld ? smoothstep(276, 262, T) : 0);
+        const snowL = Math.max(Math.min(1, bSnow[b] / Math.max(1 - fo, 1e-3)), wetWorld ? smoothstep(271, 254, T) : 0);
         const aSurf = fo * (0.07 + (seaIceAlb - 0.07) * iceO) + (1 - fo) * (bLandAlb[b] + (snowAlb - bLandAlb[b]) * snowL);
         const CF = bCloud[b];
-        const sky = 1 - (1 - skyR) * (1 - 0.32 * CF);
+        const sky = 1 - (1 - skyR) * (1 - 0.345 * CF);
         const ap = T > 1300 ? 0.1 : sky + ((1 - sky) * (1 - sky) * aSurf) / (1 - sky * aSurf);
         alb[b] = ap;
         asrB[b] = bIns[b] * (1 - ap) * transmit;
@@ -1242,7 +1263,9 @@ export class TerrestrialClimate {
         const olrAt = (TT: number) => {
           const tau = (tauDry + vapourOpticalDepth(vol.id, vapour(TT) * vapScale, P, g) + 0.25 * CF) * pz;
           const gray = (SIGMA * TT * TT * TT * TT) / (1 + 0.75 * tau);
-          if (!water || this.oceanMass() <= 0 || TT < 280) return gray;
+          // The moist radiation limit is a planet-wide threshold: only bite when the whole
+          // planet absorbs more than it (otherwise tropics just export heat poleward).
+          if (!water || !oceanLeft || !globalRunaway) return gray;
           return Math.pow(Math.pow(gray, -8) + Math.pow(olrLim, -8), -1 / 8);
         };
         const O = olrAt(T);
@@ -1315,6 +1338,9 @@ export class TerrestrialClimate {
       this.olr[k] = olrB[b];
       this.albedo[k] = alb[b];
       this.w[k] = vapour(this.Ts[k]) * vapScale;
+      // Precipitation climatology proxy (kg/m²/s) so vegetation and people have rain.
+      if (wetWorld) this.pAnnual[k] = ((0.4 + 3 * smoothstep(255, 300, this.Ts[k])) * (0.55 + 0.45 * bOcean[b])) / 86400;
+      else this.pAnnual[k] *= 0.5;
       const fl = 1 - this.ocean[k];
       if (water) {
         // Ice sheets grow below −10 °C and melt above freezing (millennial timescales).
@@ -1375,6 +1401,7 @@ export class TerrestrialClimate {
         const k = j * nLon + i;
         const T = this.Ts[k];
         const ws = this.wsat(T, p.pDry);
+        this.wsCache[k] = ws;
         // Orographic lifting from upslope winds.
         const kl = j * nLon + ((i - 1 + nLon) % nLon);
         const kr = j * nLon + ((i + 1) % nLon);
@@ -1507,6 +1534,7 @@ export class TerrestrialClimate {
   private updateVegetation(dt: number, P: number) {
     const a = 1 - Math.exp(-dt / (25 * YEAR));
     const o2ok = P > 3e4;
+    const c0 = this.vegetationCarbon();
     for (let k = 0; k < this.grid.N; k++) {
       const fl = 1 - this.ocean[k];
       if (fl < 0.01 || !o2ok) {
@@ -1522,6 +1550,23 @@ export class TerrestrialClimate {
         (1 - smoothstep(20, 300, this.snow[k])) *
         smoothstep(-25, -5, this.tWarm[k] - 273.15 - 15);
       this.veg[k] += (target - this.veg[k]) * a;
+    }
+    if (this.spinningUp) return;
+    // Plants store carbon: spreading forests draw down CO₂, dying ones release it.
+    const dC = this.vegetationCarbon() - c0;
+    this.gas.CO2 = Math.max(0, this.gas.CO2 - dC * (44 / 12));
+    // Photosynthetic oxygen (slow net burial, only while the air is still oxygen-poor) and methane.
+    const vegFrac = this.stats.vegetation || 0;
+    if (vegFrac > 0.01) {
+      const o2Frac = (this.bulk?.pp.O2 ?? 0) / Math.max(this.P, 1);
+      const prod = o2Frac < 0.15 ? 2e10 * (vegFrac / 0.2) * (dt / YEAR) * (this.area() / 5.1e14) : 0;
+      const take = Math.min(prod * (44 / 32), this.gas.CO2 * 0.5);
+      this.gas.CO2 -= take;
+      this.gas.O2 += take * (32 / 44);
+      // Wetland methane: short-lived in oxygen-rich air, accumulates in anoxic atmospheres.
+      const ch4Target = ((0.19 * vegFrac) / 0.2) * ((this.bulk?.pp.O2 ?? 0) > 1e3 ? 1 : 300);
+      const targetMass = this.partialToMass('CH4', ch4Target);
+      this.gas.CH4 = Math.max(0, this.gas.CH4 + (targetMass - this.gas.CH4) * (1 - Math.exp(-dt / (12 * YEAR))));
     }
   }
 
@@ -1612,7 +1657,7 @@ export class TerrestrialClimate {
       // Subsiding branch of the Hadley cell is dry and clear; the ITCZ is cloudy.
       const subsid = this.circ.nCells > 1 ? 0.45 * Math.exp(-((s - edge) * (s - edge)) / 0.03) : 0;
       const itczBoost = 0.2 * Math.exp(-(s * s) / 0.01);
-      const ws = this.wsat(this.Ts[k], this.bulk.pDry);
+      const ws = this.wsCache[k] || this.wsat(this.Ts[k], this.bulk.pDry);
       const rh = ws > 0 ? this.w[k] / ws : 0;
       const ls = Math.pow(clamp((rh - 0.55) / 0.4, 0, 1), 1.3) * 0.75;
       const conv = clamp((this.precip[k] * DAY) / 12, 0, 0.6) + itczBoost;
@@ -1945,6 +1990,98 @@ export class TerrestrialClimate {
     }
   }
 
+  // ------------------------------------------------------------------ civilization & biosphere
+
+  seedCivilization(mode: 'modern' | 'preindustrial' | 'emergent'): void {
+    this.civ = new Civilization(this.grid, mode, 0, this.seed);
+    this.civ.onEvent = (m, k) => this.onEvent?.(m, k);
+    this.civ.seedPopulation = mode === 'modern' ? 8.2e9 : mode === 'preindustrial' ? 1e9 : 1e5;
+    if (mode === 'modern') {
+      // Present-day Earth: ~140 ppm of today's CO₂ is anthropogenic and still airborne.
+      this.civ.excessCO2 = (17 * 4 * Math.PI * this.R * this.R) / this.g;
+    }
+    this.version++;
+  }
+
+  removeCivilization(): void {
+    this.civ = null;
+    this.version++;
+  }
+
+  /** Breathable for humans: oxygen partial pressure, CO₂ and total pressure within tolerance. */
+  breathable(): boolean {
+    const pp = this.bulk?.pp;
+    if (!pp) return false;
+    return pp.O2 > 1.4e4 && pp.O2 < 6e4 && pp.CO2 < 3000 && this.P > 4e4 && this.P < 4e5;
+  }
+
+  /** Advance civilization (if any) and check for the emergence of intelligent life. */
+  civStep(dt: number, ctx: ClimateContext): void {
+    if (dt <= 0) return;
+    const A = 4 * Math.PI * ctx.R * ctx.R;
+    if (!this.civ && this.biosphere && this.stats.humanHabitable > 0.08) {
+      this.lifeClock += dt;
+      // Intelligence emerges on long-habitable living worlds (rare per step, likely over ~100 Myr).
+      const p = 1 - Math.exp(-dt / (1.5e8 * YEAR));
+      if (this.lifeClock > 5e7 * YEAR && Math.random() < p) {
+        this.seedCivilization('emergent');
+        this.onEvent?.('Intelligent life has emerged and begun to build a civilization!', 'info');
+      }
+    }
+    const civ = this.civ;
+    if (!civ) return;
+    if (civ.pop.length !== this.grid.N) civ.regrid(this.grid);
+    const fx = civ.step(dt, {
+      grid: this.grid,
+      area: A,
+      ocean: this.ocean,
+      Ts: this.Ts,
+      tAnnual: this.tAnnual,
+      pAnnual: this.pAnnual,
+      snow: this.snow,
+      veg: this.veg,
+      breathable: this.breathable(),
+      hasOcean: this.oceanMass() > 0,
+      time: ctx.time,
+    });
+    this.gas.CO2 = Math.max(0, this.gas.CO2 + fx.co2);
+    this.aerosol = Math.max(this.aerosol, fx.aerosol);
+    // Farms and cities replace forest: higher albedo, carbon released.
+    if (this.biosphere && civ.justSeeded) {
+      // Existing farmland at the start: apply land use without a carbon pulse.
+      for (let k = 0; k < this.grid.N; k++) this.veg[k] *= 1 - civ.clearing(k, this.grid, A);
+      civ.justSeeded = false;
+    } else if (this.biosphere) {
+      let lost = 0;
+      for (let k = 0; k < this.grid.N; k++) {
+        const c = civ.clearing(k, this.grid, A);
+        if (c <= 0) continue;
+        const target = this.veg[k] * (1 - c);
+        if (target < this.veg[k]) {
+          const d = (this.veg[k] - target) * (1 - Math.exp(-dt / (30 * YEAR)));
+          this.veg[k] -= d;
+          lost += d * (1 - this.ocean[k]) * this.grid.cellArea[Math.floor(k / this.grid.nLon)];
+        }
+      }
+      // ~12 kg C per m² of forest → CO₂.
+      this.gas.CO2 += lost * A * 12 * (44 / 12);
+    }
+  }
+
+  /** Mass (kg) of gas `id` corresponding to partial pressure p (Pa) in the current mixture. */
+  partialToMass(id: GasId, p: number): number {
+    const molar = this.bulk?.molar || 0.029;
+    return (p * this.area() * GASES[id].molar) / (this.g * molar);
+  }
+
+  /** Biomass carbon (kg C) held by vegetation. */
+  vegetationCarbon(): number {
+    const A = this.area();
+    let c = 0;
+    for (let k = 0; k < this.grid.N; k++) c += this.veg[k] * (1 - this.ocean[k]) * this.grid.cellArea[Math.floor(k / this.grid.nLon)];
+    return c * A * 12;
+  }
+
   // ------------------------------------------------------------------ persistence
 
   serialize(): unknown {
@@ -1970,6 +2107,8 @@ export class TerrestrialClimate {
       tAnnual: f(this.tAnnual),
       pAnnual: Array.from(this.pAnnual),
       history: this.history.toJSON(),
+      civ: this.civ ? this.civ.serialize() : null,
+      lifeClock: this.lifeClock,
     };
   }
 
@@ -2003,6 +2142,12 @@ export class TerrestrialClimate {
     this.tWarm.set(this.tAnnual);
     this.tCold.set(this.tAnnual);
     this.history = History.from(o.history);
+    this.lifeClock = o.lifeClock ?? 0;
+    if (o.civ) {
+      this.civ = new Civilization(this.grid, 'preindustrial', 0, this.seed);
+      this.civ.onEvent = (m, k) => this.onEvent?.(m, k);
+      this.civ.restore(o.civ);
+    }
     this.updateSeaLevel();
     this.version++;
   }

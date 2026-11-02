@@ -186,7 +186,7 @@ export function dryOpticalDepth(pp: Record<GasId, number>, P: number, g: number)
 export function vapourOpticalDepth(vol: 'H2O' | 'CH4', w: number, P: number, g: number): number {
   if (w <= 0) return 0;
   const pb = Math.max(P, 1) / 1e5;
-  if (vol === 'H2O') return 0.12 * Math.pow(w, 0.4) * Math.pow(pb, 0.35);
+  if (vol === 'H2O') return 0.197 * Math.pow(w, 0.25) * Math.pow(pb, 0.35);
   // Methane vapour: convert column to partial pressure.
   return 0.008 * Math.sqrt(w * g) * Math.pow(pb, 0.4);
 }

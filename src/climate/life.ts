@@ -36,7 +36,8 @@ export function plantAlbedo(teff: number): number {
   // Leaves are bright in the near-IR ("red edge") except where pigments extend into it (M dwarfs).
   const vis = 0.2126 * r + 0.7152 * g + 0.0722 * b;
   const nir = clamp((teff - 2600) / 2500, 0.15, 1) * 0.35;
-  return clamp(0.5 * vis + 0.5 * nir, 0.04, 0.25);
+  // Canopies trap light between leaves: whole-canopy albedo is ~60% of a single leaf's.
+  return clamp(0.6 * (0.5 * vis + 0.5 * nir), 0.04, 0.2);
 }
 
 export function pigmentName(teff: number): string {
