@@ -1,0 +1,185 @@
+# Aeolus — Planetary Climate Sandbox: Design Plan
+
+A browser-based space sandbox in the spirit of "universe simulators", but built around one
+idea: **every world has weather and climate**. Move a planet, change its star, add CO₂,
+smash a moon into it — and watch oceans freeze, deserts spread, hurricanes form, or the
+oceans boil away.
+
+## 1. Platform & stack
+
+| Concern      | Choice                                                              |
+| ------------ | ------------------------------------------------------------------- |
+| Language     | TypeScript (strict)                                                 |
+| Rendering    | Three.js (WebGL2), custom GLSL shaders, logarithmic depth, bloom    |
+| Build/dev    | Vite                                                                |
+| Tests        | Vitest (physics + climate calibration), Playwright smoke/screenshot |
+| UI           | Vanilla TS + CSS (no framework), canvas charts/maps                 |
+| Hosting      | GitHub Pages via Actions (`.github/workflows/deploy.yml`)           |
+
+Everything is simulated in SI units with float64 on the CPU. Rendering uses a floating
+origin (camera-relative positions) so a 1 km detail and a 40 AU orbit coexist without jitter.
+
+## 2. Architecture
+
+```
+src/
+  core/      constants, vectors, noise, RNG, formatting
+  data/      Solar-System physical/orbital data
+  physics/   bodies, N-body + Kepler integrators, orbits, collisions, mass-radius
+  stars/     stellar evolution, blackbody colour/spectra, habitable zones
+  climate/   terrestrial climate model, circulation, storms, gas-giant model, terrain, biomes
+  sim/       simulation orchestration, scenarios, challenges, save/load
+  render/    Three.js scene, camera, body views + shaders, orbits, labels, particles
+  ui/        panels, inspector, map view, charts, toolbox, notifications
+```
+
+The simulation is fully headless (testable in Node). The renderer and UI only read state
+and issue commands.
+
+## 3. Physics
+
+### Gravity
+* **N-body** leapfrog (kick-drift-kick) with an adaptive global step chosen from the tightest
+  pair (`η·sqrt(r³/GM)` and `r/v_rel`), sub-stepped inside a per-frame work budget.
+* **Kepler mode** for extreme time warps (millions–billions of years per second): bodies ride
+  analytic orbits in a hierarchy (moon → planet → star, circumbinary planets around the binary
+  barycentre). Star mass loss widens orbits adiabatically (`a·M = const`). The game switches
+  automatically and shows which mode is active.
+* Collisions merge bodies (momentum conserved), convert impact energy into heat (magma
+  oceans, impact winters, steam atmospheres), deliver water from icy impactors and spawn
+  debris. Roche-limit crossings shred bodies into rings.
+* **Impacts leave craters**: crater size from pi-scaling laws (impactor size, speed, density,
+  target gravity), carved into the target's terrain at the true impact point (bowl, rim, central
+  peak, ejecta blanket and bright rays), with a glowing melt sheet that cools, local heating,
+  vaporised ocean water, and dust/soot "impact winters" for large events. Planet-scale impacts
+  resurface the world into a magma ocean. Craters are saved with the system.
+* Tidal heating (Io-style) feeds a planet's internal heat flux; tidal locking is supported.
+* Mass–radius relations per class (rocky, ice giant, gas giant, brown dwarf, star, white
+  dwarf, neutron star, black hole). Gaining mass can turn a gas giant into a brown dwarf or
+  ignite it as a star.
+
+### Stars
+* Main-sequence relations (L, R, Teff vs mass) with brightening over the main sequence
+  (the faint young Sun is 30% dimmer).
+* Post-main-sequence tracks: subgiant → red giant → helium burning → AGB → planetary nebula
+  → white dwarf cooling; massive stars: supergiant → core-collapse supernova → neutron
+  star/black hole. Mass loss, engulfment of inner planets and supernova blast/fluence
+  (atmosphere stripping, vaporisation) are simulated.
+* Blackbody colours from CIE colour-matching functions; spectral fractions drive physics
+  (Rayleigh scattering strength and ice albedo depend on the star's colour — ice is darker
+  under red dwarfs). XUV luminosity (saturated when young) drives atmospheric escape.
+* Habitable-zone limits (Kopparapu et al. 2013) are drawn around every star.
+
+## 4. Climate & weather (the core)
+
+Every rocky world (planets, moons, dwarf planets) runs a **gridded latitude–longitude climate
+model**; the focused world runs at high resolution, others at lower resolution with a
+round-robin CPU budget so dozens of worlds stay live.
+
+Per cell: surface temperature, atmosphere/deep temperature (two heat reservoirs), water vapour,
+clouds, precipitation, snow/land ice, sea ice, soil moisture, vegetation, CO₂/N₂ frost, winds,
+pressure anomaly.
+
+* **Radiation**: insolation from every star with correct geometry (spin axis, obliquity,
+  seasons, day/night, eclipses), adapting to the time step (instantaneous → daily mean →
+  annual mean). Albedo from oceans, land, vegetation, snow, sea ice, clouds, Rayleigh
+  scattering, hazes and sulfuric cloud decks. Gray-atmosphere greenhouse
+  (`Ts⁴ ≈ Te⁴(1 + ¾τ)`) with τ from CO₂, H₂O, CH₄, NH₃, SO₂, H₂ collision-induced absorption,
+  engineered gases and clouds, calibrated on Earth, Venus, Mars and Titan.
+* **Water vapour feedback & runaway greenhouse**: moist atmospheres cannot radiate more than
+  ~282 W/m², so a planet pushed too close to its star boils its oceans into a steam
+  atmosphere and then loses water to space.
+* **Heat transport**: implicit (ADI) diffusion — stable at any time step — with a diffusivity
+  that scales with atmospheric mass, gravity, molecular weight and rotation rate (slow
+  rotators like Venus are nearly isothermal; tidally locked thin atmospheres collapse).
+  Ocean heat transport in a slab ocean.
+* **Circulation**: Hadley-cell width from Held–Hou theory (1 cell on Venus/Titan, 3 on
+  Earth, more on fast rotators), ITCZ following the thermal equator, trade winds, westerlies,
+  thermal lows/highs (monsoons), frictional-geostrophic winds, superrotation, day→night flow on
+  tidally locked worlds.
+* **Hydrology**: evaporation (bulk formula), Clausius–Clapeyron saturation, condensation with
+  orographic rain shadows, rain vs snow, snowmelt, glaciers that flow, sea ice thermodynamics,
+  soil moisture, runoff, and **sea level from water conservation** (ice ages expose land
+  bridges). Titan runs a methane cycle with the same machinery. Mars-style CO₂ frost caps and
+  seasonal pressure cycles, Pluto/Triton N₂ frost, atmospheric collapse.
+* **Weather systems**: tropical cyclones (genesis over warm oceans, potential intensity,
+  steering, landfall decay, hypercanes on hot worlds), extratropical cyclones in baroclinic
+  zones, Martian dust storms, long-lived gas-giant vortices.
+* **Long-term**: carbonate–silicate weathering thermostat (snowball Earth escape over Myr),
+  volcanic outgassing, energy-limited atmospheric escape, magma oceans after giant impacts,
+  dynamic vegetation, biome classification.
+* **Gas giants**: zonal jets from the Rhines scale, banded clouds coloured by Sudarsky class
+  (ammonia → water → clear → alkali → silicate), internal heat, radiative-timescale-controlled
+  day/night contrast with hot-spot offsets on hot Jupiters, persistent vortices.
+* **Habitability**: per-cell liquid-water habitability, "shirt-sleeve" human habitability
+  (O₂, CO₂, T, P), Earth Similarity Index.
+
+### Procedural worlds
+All terrain is procedural and seeded — no real-world maps. Earth-like worlds use a
+plate-tectonics recipe (continental/oceanic plates, collision mountain belts, coastal ranges and
+trenches, island arcs, mid-ocean ridges, rifts, continental shelves). Other recipes: Mars-like
+(hemispheric dichotomy, shield-volcano province, impact basins, canyon systems), cratered
+(Moon/Mercury with maria), icy (cracked Europa-like, cratered Ganymede/Callisto-like), Venus-like
+volcanic plains with highland blocks, Io-like volcanic, Titan-like dunes and polar basins,
+Pluto-like ice plains. Sea level (and therefore coastlines) follows from the water inventory
+and the generated hypsometry. Any world's terrain can be re-rolled from the inspector.
+
+## 5. Rendering
+
+* **HDR with eye adaptation.** *Realistic* mode uses physical brightness (lighting ∝ real flux,
+  star surfaces at true radiance) and auto-exposure measured from the frame: approach a star and
+  everything else vanishes in the glare; on a planet's night side the eye adapts and distant
+  stars and the Milky Way appear. *Enhanced* mode compresses the range so everything stays visible.
+* **Backgrounds:** procedural starfield + Milky Way, stars only, or pure black.
+* **Physically based atmospheric scattering** (Rayleigh + Mie single scattering, ray-marched)
+  from space and from inside: blue skies, red sunsets, butterscotch Martian skies with blue
+  sunsets, orange Titan haze, aerial perspective on terrain.
+* **Land on rocky worlds:** quadtree LOD terrain (cube-sphere patches displaced on the GPU from the
+  procedural elevation + detail noise), ocean surface, flight/walk camera near the ground.
+* **Fly into clouds:** volumetric cloud layers ray-marched from the live climate cloud field on
+  rocky planets; on gas giants you can descend through the ammonia, NH₄SH and water cloud decks
+  into the deep murk (with pressure/temperature readouts). Distant views use cheaper cloud shells.
+
+* Terrestrial planets: GPU-composed surface from elevation + live climate fields (oceans, sea
+  ice, snow, vegetation, deserts, lava), bump-mapped terrain, specular oceans, cloud layer
+  driven by the model (moving with the winds, storms rendered as spirals), physically-inspired
+  atmospheric scattering coloured by composition and star colour, eclipse shadows.
+* Gas giants: procedural turbulent bands, vortices, ring systems with shadows, thermal glow.
+* Stars: granulation, limb darkening, sunspots, corona and bloom; white dwarfs, neutron stars
+  with pulsar beams, black holes with gravitational lensing.
+* Starfield + Milky Way, orbit paths and trails, habitable-zone rings, labels, debris and
+  supernova effects, animated wind particles on the globe.
+* Data layers on the globe and a 2D map: temperature, precipitation, clouds, wind, pressure
+  (isobars), ice, biomes, habitability, insolation, elevation.
+
+## 6. Gameplay
+
+* **Sandbox tools**: add stars/planets/moons/asteroids/comets/black holes by clicking in the
+  scene (auto circular orbit), edit mass, orbit, spin, tilt, atmosphere gases, water, internal
+  heat, sunshades/mirrors; seed life; bombard with comets; delete/duplicate.
+* **Time**: pause to 1 Gyr per second, automatic integrator switching.
+* **Scenarios**: Solar System (J2000), Earth & Moon, TRAPPIST-1, Proxima b eyeball world,
+  twin suns, hot Jupiter, lava world, Snowball Earth, early Mars, future red-giant Sun,
+  rogue star flyby, empty system.
+* **Challenges**: terraform Mars, cool Venus, escape Snowball Earth, save Earth from the
+  brightening Sun, make an eyeball world habitable. Objectives must be sustained for a
+  period of simulated time.
+* **Analysis**: weather stations (click the map), time-series charts, climate diagrams.
+* **Save/load** to browser storage and JSON files.
+
+## 7. Milestones
+
+1. Scaffold, plan, constants, maths, noise.
+2. Physics core (N-body, Kepler mode, collisions, classification) + tests.
+3. Stars (evolution, colour, HZ) + tests.
+4. Climate model (terrestrial + gas giant + storms + hydrology) + calibration tests.
+5. Simulation orchestration + scenarios + challenges.
+6. Renderer, shaders, effects.
+7. UI (toolbox, inspector, time bar, map, charts, notifications, help, settings).
+8. Headless browser smoke tests & screenshot review; performance tuning.
+9. README, Pages deployment.
+
+## 8. Future ideas
+
+Web Worker climate, ocean currents (gyres), Milankovitch secular perturbations, plate
+tectonics, multiplayer sharing of systems, VR.
