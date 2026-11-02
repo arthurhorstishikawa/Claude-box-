@@ -103,7 +103,7 @@ export class EyeAdaptation {
           s += Math.log(Math.max(Math.min(l, thr), 1e-9)) * w;
           wsum += w;
         }
-      const hi = Math.min(this.sorted[Math.floor(n * 0.97)], thr);
+      const hi = Math.min(this.sorted[Math.floor(n * 0.99)], thr);
       const logAvg = Math.exp(s / wsum);
       if (!Number.isFinite(logAvg) || !Number.isFinite(hi)) return;
       this.sceneLuminance = Math.max(1e-14, logAvg / this.exposure);
@@ -127,7 +127,7 @@ export class EyeAdaptation {
     const key = 0.07 + 0.11 * clamp((Math.log10(L) + 6) / 4, 0, 1);
     const fromAverage = key / L;
     // Bright parts of the scene itself (sunlit clouds, snow) stay just below white.
-    const fromHighlights = 1.4 / this.highlight;
+    const fromHighlights = 1.0 / this.highlight;
     const t = Math.min(fromAverage, fromHighlights) * Math.pow(2, view.ev);
     // Range of the dark- to light-adapted human eye (relative to a sunlit white surface).
     this.target = clamp(t, 1.5e-6, 3e5);

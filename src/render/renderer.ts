@@ -190,7 +190,10 @@ export class Renderer {
     const lights: LightSrc[] = [];
     for (const b of sim.bodies) {
       if (b.star && b.star.L > 0) {
-        const c = blackbodyRGB(b.star.T);
+        const raw = blackbodyRGB(b.star.T);
+        // Chromatic adaptation: the eye partly white-balances to the light it lives under, so a
+        // red dwarf's light looks orange rather than neon red (and a blue star, pale blue).
+        const c = raw.map((x) => Math.pow(Math.max(x, 1e-4), 0.55)) as [number, number, number];
         // Normalise colour to unit luminance so flux carries the brightness.
         const lum = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
         lights.push({ body: b, color: [c[0] / lum, c[1] / lum, c[2] / lum], L: b.star.L });
@@ -367,7 +370,25 @@ export class Renderer {
         const up = V3.sub(camPos, tgt.pos).normalize();
         belowHorizon = V3.sub(b.pos, camPos).normalize().dot(up) < -0.01;
       }
-      if (!visible || inside || belowHorizon || (crowded && !important)) {
+      // Hidden behind a nearer body (e.g. the Sun's label while it is behind the planet).
+      let occluded = false;
+      if (visible && !belowHorizon) {
+        const dir = V3.sub(b.pos, camPos);
+        const dl = dir.len();
+        dir.scale(1 / Math.max(dl, 1));
+        for (const o of this.sim.bodies) {
+          if (o === b || o.radius < 1e5) continue;
+          const oc = V3.sub(o.pos, camPos);
+          const t = oc.dot(dir);
+          if (t <= 0 || t >= dl) continue;
+          const d2 = oc.dot(oc) - t * t;
+          if (d2 < o.radius * o.radius * 0.98) {
+            occluded = true;
+            break;
+          }
+        }
+      }
+      if (!visible || inside || belowHorizon || occluded || (crowded && !important)) {
         el.style.display = 'none';
         continue;
       }

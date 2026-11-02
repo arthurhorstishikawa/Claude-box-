@@ -418,7 +418,8 @@ export class RockyView extends BodyView {
     const cloudAlt = Math.min(8000 * (9.81 / ap.g), ap.Hr * 1.2, R * 0.02);
     this.cloudTop = cloudAlt * 1.6;
     const alt = V3.sub(ctx.camPos, b.pos).len() - R;
-    const volFade = focus && showClouds ? smoothstep(this.cloudTop * 40, this.cloudTop * 8, alt) : 0;
+    // Thin air (Mars) only has wispy hazes: no volumetric layer.
+    const volFade = focus && showClouds && c!.P > 5e3 ? smoothstep(this.cloudTop * 40, this.cloudTop * 8, alt) : 0;
     this.cloudShell.visible = showClouds && volFade < 0.99;
     this.cloudShell.scale.setScalar(R + cloudAlt + Math.max(0, sea > -1e8 ? sea : 0));
     const cu = this.cloudMat.uniforms;
