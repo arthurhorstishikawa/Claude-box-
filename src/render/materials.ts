@@ -220,7 +220,7 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
           if (uHasAtm > 0.5) {
             // Sunlight reddened by the atmosphere on its way down.
             vec2 od = lightDepth(vWorld - uPlanetCenter, L);
-            rad *= exp(-(uBetaR * od.x + uBetaM * od.y));
+            rad *= exp(-uBetaR * od.x) * hazeT(uBetaM * od.y);
           }
           col += albedo * rad * ndl * horizon * shadow;
           // Skylight: hemispherical, keeps shadowed slopes from going pitch black by day.
@@ -366,7 +366,7 @@ export function makeCloudShellMaterial(): THREE.ShaderMaterial {
           float ndl = dot(N, L);
           float lit = smoothstep(-0.12, 0.25, ndl);
           vec2 od = lightDepth(vWorld - uPlanetCenter, L);
-          vec3 rad = uSunRadiance[s] * exp(-(uBetaR * od.x + uBetaM * od.y));
+          vec3 rad = uSunRadiance[s] * exp(-uBetaR * od.x) * hazeT(uBetaM * od.y);
           if (s == 0) rad *= eclipse(vWorld, L);
           float silver = pow(max(dot(-V, L), 0.0), 8.0) * 0.6;
           col += uCloudColor * rad * lit * (0.75 + 0.25 * dens + silver);
@@ -523,14 +523,15 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
         if (t1 <= t0) discard;
         const int STEPS = 44;
         float L = t1 - t0;
-        // Interleaved-gradient jitter (mild) hides step banding without coarse grain.
-        float jitter = 0.5 + 0.2 * (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5);
+        // Unstructured per-pixel jitter hides step banding (a structured dither pattern showed
+        // up as swirls and speckle on dark ground).
+        float jitter = 0.5 + 0.35 * (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5);
         // Atmospheric reddening of sunlight, evaluated once near the start of the path.
         vec3 sunRad[2];
         for (int s = 0; s < 2; s++) {
           if (s >= uNumSuns) { sunRad[s] = vec3(0.0); continue; }
           vec2 odA = lightDepth(ro + rd * (t0 + 0.25 * L), uSunDir[s]);
-          sunRad[s] = uSunRadiance[s] * exp(-(uBetaR * odA.x + uBetaM * odA.y));
+          sunRad[s] = uSunRadiance[s] * exp(-uBetaR * odA.x) * hazeT(uBetaM * odA.y);
         }
         vec3 acc = vec3(0.0);
         float T = 1.0;
@@ -554,7 +555,8 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
               float phase = 0.6 * phaseM(mu, 0.6) * 4.0 * PI + 0.4;
               // Beer + powder-like multiple-scattering term; planet shadow via the light path.
               float lit = smoothstep(-0.08, 0.06, dot(normalize(p), Ld));
-              Lsum += sunRad[s] * lit * (exp(-od) + 0.3 * exp(-od * 0.25)) * phase;
+              // Beer + multiple-scattering tail: light diffuses through thick cloud (grey bases).
+              Lsum += sunRad[s] * lit * max(exp(-od) + 0.3 * exp(-od * 0.25), 0.55 / (1.0 + 0.3 * od)) * phase;
             }
             float depthDark = uGiant == 1 ? mix(0.12, 1.0, smoothstep(0.0, 0.85, (length(p) - uShellIn) / (uShellOut - uShellIn))) : 1.0;
             vec3 cc = uCloudColor;

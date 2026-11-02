@@ -30,8 +30,8 @@ export class EyeAdaptation {
   sceneLuminance = 0.18;
   /** Absolute luminance of the brightest ~1% of the view. */
   highlight = 1;
-  /** Absolute luminance of the brightest ~0.1% of the view. */
-  peak = 1;
+  /** Mean absolute luminance of glare sources over the whole view (their veiling flux). */
+  peak = 0;
   private rt: THREE.WebGLRenderTarget;
   private quad: THREE.Mesh;
   private scene = new THREE.Scene();
@@ -80,29 +80,37 @@ export class EyeAdaptation {
       renderer.readRenderTargetPixels(this.rt, 0, 0, MW, MH, this.buf);
       renderer.setRenderTarget(prev);
       const n = MW * MH;
+      for (let k = 0; k < n; k++) this.sorted[k] = this.buf[k * 4];
+      this.sorted.sort();
+      // Glare sources (a star's disk and halo) are far brighter than the scene around them. The
+      // eye doesn't stop down until they are black-white specks — they add a veil instead,
+      // which only dominates when a star fills a good part of the view.
+      // Glare = far brighter than the bright part of the scene (90th percentile): a small sun
+      // in the sky qualifies; a planet filling part of a black sky, or a star filling the
+      // view, does not (they set the exposure through the highlight rule instead).
+      const thr = Math.max(this.sorted[Math.floor(n * 0.9)] * 40, 1e-12);
       let s = 0,
-        wsum = 0;
+        wsum = 0,
+        glare = 0;
       for (let j = 0; j < MH; j++)
         for (let i = 0; i < MW; i++) {
-          const k = j * MW + i;
-          const l = this.buf[k * 4];
-          this.sorted[k] = l;
+          const l = this.buf[(j * MW + i) * 4];
+          if (l > thr) glare += l;
           // Centre-weighted average, like the eye's fixation.
           const dx = (i + 0.5) / MW - 0.5,
             dy = (j + 0.5) / MH - 0.5;
           const w = 1 + 2 * Math.exp(-(dx * dx + dy * dy) / 0.04);
-          s += Math.log(Math.max(l, 1e-9)) * w;
+          s += Math.log(Math.max(Math.min(l, thr), 1e-9)) * w;
           wsum += w;
         }
-      this.sorted.sort();
-      const hi = this.sorted[Math.floor(n * 0.99)];
-      const top = this.sorted[Math.floor(n * 0.999)];
+      const hi = Math.min(this.sorted[Math.floor(n * 0.97)], thr);
       const logAvg = Math.exp(s / wsum);
       if (!Number.isFinite(logAvg) || !Number.isFinite(hi)) return;
       this.sceneLuminance = Math.max(1e-14, logAvg / this.exposure);
       this.highlight = Math.max(1e-14, hi / this.exposure);
-      this.peak = Math.max(1e-14, Math.min(top, CLIP) / this.exposure);
-      this.clipped = hi >= CLIP * 0.999;
+      this.peak = Math.max(1e-14, glare / n / this.exposure);
+      const top = this.sorted[n - 1];
+      this.clipped = top >= CLIP * 0.999 && glare / n > CLIP * 0.05;
     } catch {
       this.ok = false;
     }
@@ -113,15 +121,14 @@ export class EyeAdaptation {
       this.exposure = Math.pow(2, view.ev);
       return;
     }
-    const L = this.sceneLuminance;
+    // Scene brightness plus the veil of glare from bright sources (`peak` = glare flux).
+    const L = this.sceneLuminance + 0.05 * this.peak;
     // Middle-grey key: a little lower in the dark so night still looks like night.
     const key = 0.07 + 0.11 * clamp((Math.log10(L) + 6) / 4, 0, 1);
     const fromAverage = key / L;
-    // Highlights (sunlit cloud tops, a star's disk) land just below white.
-    const fromHighlights = 0.9 / this.highlight;
-    // Small, very bright features (sunlit cloud tops, ice) may glow but not burn out.
-    const fromPeak = 2.2 / this.peak;
-    const t = Math.min(fromAverage, fromHighlights, fromPeak) * Math.pow(2, view.ev);
+    // Bright parts of the scene itself (sunlit clouds, snow) stay just below white.
+    const fromHighlights = 1.4 / this.highlight;
+    const t = Math.min(fromAverage, fromHighlights) * Math.pow(2, view.ev);
     // Range of the dark- to light-adapted human eye (relative to a sunlit white surface).
     this.target = clamp(t, 1.5e-6, 3e5);
     const brighter = this.target < this.exposure;

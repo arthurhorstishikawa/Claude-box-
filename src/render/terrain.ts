@@ -259,6 +259,56 @@ export function buildPatchGeometry(node: PatchNode, hf: HeightField, seaLevel: n
 }
 
 /**
+ * Progressive refinement for rendering: walk the quadtree from the six roots; a node splits
+ * only when the camera wants more detail there *and* its four children are already built —
+ * otherwise it is drawn itself and its children are requested. The result always tiles the
+ * whole (visible) sphere with built patches, and sharpens as patches finish building.
+ */
+export function refinePatches(
+  R: number,
+  camBody: V3,
+  maxDepth: number,
+  splitFactor: number,
+  maxElev: number,
+  groundAt: (d: V3) => number,
+  isBuilt: (key: string) => boolean,
+): { show: PatchNode[]; request: PatchNode[] } {
+  const show: PatchNode[] = [];
+  const request: PatchNode[] = [];
+  const camDist = camBody.len();
+  const camDir = camBody.clone().scale(1 / Math.max(camDist, 1));
+  const hor = camDist > R ? Math.acos(clamp(R / camDist, -1, 1)) + Math.acos(clamp(R / (R + maxElev), -1, 1)) : Math.PI;
+  const c = new V3();
+  const visit = (face: number, ix: number, iy: number, depth: number) => {
+    const size = 2 / (1 << depth);
+    cubeToSphere(face, -1 + (ix + 0.5) * size, -1 + (iy + 0.5) * size, c);
+    const arc = size * 0.85;
+    if (depth > 0 && Math.acos(clamp(c.dot(camDir), -1, 1)) - arc > hor + 0.02) return;
+    const half = arc * R;
+    const rg = R + groundAt(c);
+    const dist = Math.max(0, Math.hypot(c.x * rg - camBody.x, c.y * rg - camBody.y, c.z * rg - camBody.z) - half);
+    const node = patchNode(face, depth, ix, iy, R, maxElev, camBody);
+    if (depth < maxDepth && dist < half * splitFactor) {
+      const kids: [number, number][] = [
+        [2 * ix, 2 * iy],
+        [2 * ix + 1, 2 * iy],
+        [2 * ix, 2 * iy + 1],
+        [2 * ix + 1, 2 * iy + 1],
+      ];
+      const missing = kids.filter(([x, y]) => !isBuilt(patchKey(face, depth + 1, x, y)));
+      if (missing.length === 0) {
+        for (const [x, y] of kids) visit(face, x, y, depth + 1);
+        return;
+      }
+      for (const [x, y] of missing) request.push(patchNode(face, depth + 1, x, y, R, maxElev, camBody));
+    }
+    show.push(node);
+  };
+  for (let f = 0; f < 6; f++) visit(f, 0, 0, 0);
+  return { show, request };
+}
+
+/**
  * Choose the visible leaf patches for a camera at `camBody` (body frame, metres). A patch
  * splits when the camera is within `splitFactor` patch-sizes of it, measured to the ground
  * under the patch centre (`groundAt`, m above R) — so the leaf count grows only with depth.

@@ -108,7 +108,8 @@ export class Civilization {
     const fIce = 1 - smoothstep(20, 400, w.snow[k]);
     const fVeg = 0.5 + 0.5 * w.veg[k];
     const fAtm = w.breathable ? 1 : this.tech >= 2 ? 0.05 : 0;
-    const density = this.tech < 1 ? 3e-5 : this.tech < 2 ? 1.6e-4 : 2.2e-4; // people per m²
+    // People per m² of good land; post-carbon societies stabilise (smaller families, ~10 bn on Earth).
+    const density = this.tech < 1 ? 3e-5 : this.tech < 2 ? 1.6e-4 : 1.25e-4;
     const cellArea = w.grid.cellArea[j] * w.area * land;
     return cellArea * density * fT * fP * fIce * fVeg * fAtm;
   }
@@ -193,15 +194,17 @@ export class Civilization {
       this.onEvent?.('Population has halved from its peak as the climate deteriorates.', 'danger');
     }
     // Emissions: per-capita CO₂ (t/yr) by era.
-    const perCapita = (this.era === 'industrial' ? 4.8 * smoothstep(1, 1.15, this.tech) * (1 - smoothstep(1.7, 2, this.tech)) : this.era === 'agrarian' ? 0.05 : this.era === 'clean' ? 0.2 : 0) * (this.carbonTax && this.era === 'industrial' ? 0.35 : 1);
+    const perCapita = (this.era === 'industrial' ? 4.8 * smoothstep(1, 1.15, this.tech) * (1 - smoothstep(1.7, 2, this.tech)) : this.era === 'agrarian' ? 0.02 : 0) * (this.carbonTax && this.era === 'industrial' ? 0.35 : 1);
     this.emissions = (total * perCapita * 1000) / YEAR;
     const co2 = this.emissions * dt;
     this.cumulativeCO2 += co2;
-    // Ocean uptake of the anthropogenic excess (airborne fraction ~45% over decades).
-    this.excessCO2 += co2;
+    // Ocean uptake: about 78% of emitted CO₂ is eventually absorbed (centuries); the rest stays
+    // airborne until rock weathering removes it over ~100 kyr. `excessCO2` is the absorbable
+    // part still in the air.
+    this.excessCO2 += 0.78 * co2;
     let absorbed = 0;
     if (w.hasOcean && this.excessCO2 > 0) {
-      absorbed = this.excessCO2 * 0.55 * (1 - Math.exp(-dt / (60 * YEAR)));
+      absorbed = this.excessCO2 * (1 - Math.exp(-dt / (150 * YEAR)));
       this.excessCO2 -= absorbed;
     }
     let aerosol = this.era === 'industrial' ? 0.012 * (this.emissions / ((4e13 / YEAR) || 1)) : 0;
@@ -240,7 +243,8 @@ export class Civilization {
   clearing(k: number, grid: LatLonGrid, area: number): number {
     const j = Math.floor(k / grid.nLon);
     const dens = this.pop[k] / Math.max(grid.cellArea[j] * area, 1);
-    return clamp(dens / 8e-5, 0, 0.7);
+    // Post-carbon societies farm more intensively and let forests return.
+    return clamp(dens / 8e-5, 0, 0.7) * (this.era === 'clean' ? 0.6 : 1);
   }
 
   serialize(): unknown {

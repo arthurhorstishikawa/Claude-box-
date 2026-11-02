@@ -20,7 +20,7 @@ import {
   makeVolumeCloudMaterial,
 } from './materials';
 import { TreeField } from './fx';
-import { buildPatchGeometry, HeightField, parentNode, patchNode, selectPatches, type PatchNode } from './terrain';
+import { buildPatchGeometry, HeightField, patchNode, refinePatches, type PatchNode } from './terrain';
 import { bandTexture, ClimateTextures, elevationTexture, ringTexture, thermalTexture, updateElevationTexture } from './textures';
 import { bodyBasis, rel, toThree } from './units';
 import { LAYERS, view, type LayerId } from './viewSettings';
@@ -282,7 +282,8 @@ export class RockyView extends BodyView {
     const dust = c.dust;
     const haze = c.hazeBase;
     const deck = (c.bulk?.pp.SO2 ?? 0) > 1 && c.P > 5e5 ? smoothstep(5e5, 3e6, c.P) : 0;
-    const Hm = haze > 0 ? Hr * 2.5 : Math.max(Hr * 0.25, 800);
+    // Hazes and cloud decks extend high up; boundary-layer aerosol stays low.
+    const Hm = haze > 0 || deck > 0.1 ? Hr * 2.5 : Math.max(Hr * 0.25, 800);
     const tauM = 0.09 * Math.min(1, c.P / 1e5) + dust * 0.9 + haze * 3 + c.aerosol * 0.5 + deck * 20;
     const bm = tauM / Hm;
     const betaM = new THREE.Vector3(bm, bm, bm);
@@ -373,55 +374,43 @@ export class RockyView extends BodyView {
     }
     const maxElev = Math.max(9000, Math.abs(c?.terrain.max ?? 9000) + 2000);
     const hfRef = this.hf;
-    const nodes = selectPatches(R, camBody, maxDepth, 2.3, maxElev, (d) => Math.max(hfRef.base(d), sea > -1e8 ? sea : -1e9));
-    // Build missing patches within a time budget, coarse and near ones first; until a leaf
-    // exists its nearest built ancestor stands in, so the surface never has holes.
     const build = (n: PatchNode): THREE.Mesh => {
-      const g = buildPatchGeometry(n, this.hf!, sea, sea > -1e8);
+      const g = buildPatchGeometry(n, hfRef, sea, sea > -1e8);
       const m = new THREE.Mesh(g, this.material);
       m.position.set(n.center.x, n.center.y, n.center.z);
       m.renderOrder = 1;
       this.patches.set(n.key, m);
       return m;
     };
-    const missing = nodes.filter((n) => !this.patches.has(n.key)).sort((a, b) => a.depth - b.depth || a.dist - b.dist);
-    const deadline = performance.now() + (focus ? 7 : 2.5);
-    for (const n of missing) {
+    // The six face roots always exist, so the planet is never missing pieces.
+    for (let f = 0; f < 6; f++) {
+      const r = patchNode(f, 0, 0, 0, R, maxElev);
+      if (!this.patches.has(r.key)) build(r);
+    }
+    const { show, request } = refinePatches(R, camBody, maxDepth, 2.3, maxElev, (d) => Math.max(hfRef.base(d), sea > -1e8 ? sea : -1e9), (k) => this.patches.has(k));
+    request.sort((p, q) => p.dist - q.dist || p.depth - q.depth);
+    const deadline = performance.now() + (focus ? 8 : 2.5);
+    for (const n of request) {
       if (performance.now() > deadline) break;
-      build(n);
+      if (!this.patches.has(n.key)) build(n);
     }
-    const cover = new Map<string, PatchNode>();
-    for (const n of nodes) {
-      if (this.patches.has(n.key)) continue;
-      let a = parentNode(n, R, maxElev);
-      while (a && !this.patches.has(a.key)) a = a.depth > 0 ? parentNode(a, R, maxElev) : null;
-      if (!a) {
-        // Nothing built on this face yet: build the root (cheap) so there is never a hole.
-        a = patchNode(n.face, 0, 0, 0, R, maxElev);
-        if (!this.patches.has(a.key)) build(a);
-      }
-      cover.set(a.key, a);
-    }
-    const covered = (n: PatchNode): boolean => {
-      for (let a = parentNode(n, R, maxElev); a; a = parentNode(a, R, maxElev)) if (cover.has(a.key)) return true;
-      return false;
-    };
     const want = new Set<THREE.Mesh>();
-    for (const n of nodes) {
-      const m = this.patches.get(n.key);
-      if (m && !covered(n)) want.add(m);
-    }
-    for (const k of cover.keys()) want.add(this.patches.get(k)!);
+    for (const n of show) want.add(this.patches.get(n.key)!);
     for (const m of this.shown) if (!want.has(m)) this.group.remove(m);
     for (const m of want) if (m.parent !== this.group) this.group.add(m);
     this.shown = [...want];
-    // Evict old patches.
-    if (this.patches.size > 900) {
+    // Evict the patches farthest from the camera (never shown ones or face roots).
+    if (this.patches.size > 2400) {
+      const shownSet = new Set(this.shown);
+      const cands: [string, number][] = [];
       for (const [k, m] of this.patches) {
-        if (this.shown.includes(m)) continue;
-        m.geometry.dispose();
+        if (shownSet.has(m) || k.split(':')[1] === '0') continue;
+        cands.push([k, camBody.distTo(new V3(m.position.x, m.position.y, m.position.z))]);
+      }
+      cands.sort((a, b) => b[1] - a[1]);
+      for (const [k] of cands.slice(0, this.patches.size - 1800)) {
+        this.patches.get(k)!.geometry.dispose();
         this.patches.delete(k);
-        if (this.patches.size < 700) break;
       }
     }
     // --- clouds and sky

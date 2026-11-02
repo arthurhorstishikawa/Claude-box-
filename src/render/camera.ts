@@ -91,15 +91,21 @@ export class CameraController {
     return this.groundHeight ? this.groundHeight(b, this.lat, this.lon) : 0;
   }
 
-  /** Switch to the surface/flight mode directly below the current camera. */
-  enterSurface(): void {
+  /**
+   * Switch to the surface/flight mode below the camera. The altitude comes from the requested
+   * distance (`this.dist`, or `alt` if given), not the camera's lagging position — otherwise a
+   * zoom step that crosses the threshold would land and immediately take off again.
+   */
+  enterSurface(alt?: number): void {
     const b = this.target;
     if (!b) return;
     const rel = V3.sub(this.pos, b.pos);
     const loc = b.toBody(rel.clone().normalize());
     this.lat = Math.asin(clamp(loc.z, -1, 1));
     this.lon = Math.atan2(loc.y, loc.x);
-    this.alt = Math.max(rel.len() - b.radius, this.groundAt(b) + 50);
+    const want = alt ?? this.dist - b.radius;
+    this.alt = clamp(want, this.groundAt(b) + 50, b.radius * 0.04);
+    this.trans = null;
     this.heading = 0;
     this.pitch = -0.35;
     this.mode = 'surface';

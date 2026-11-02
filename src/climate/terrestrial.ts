@@ -1101,7 +1101,8 @@ export class TerrestrialClimate {
     // 9. Climatology, sea level, statistics.
     this.updateClimatology(dt);
     this.updateSeaLevel();
-    this.computeStats(ctx, bulk, tauSum, dt);
+    this.bulk = bulkFromMasses(this.gas, R, g);
+    this.computeStats(ctx, this.bulk, tauSum, dt);
     this.evolveLife(dt);
     this.drift(dt, ctx);
     this.version++;
@@ -1370,11 +1371,17 @@ export class TerrestrialClimate {
     // Ice-sheet growth draws on the ocean; at most a third of it per step.
     const oceanNow = this.oceanMass();
     let iceBudget = water ? 0.33 * oceanNow : 0;
+    // Thin-air worlds swing hot by day and very cold by night, so their time-mean temperature
+    // sits well below the energy-balance (flux-mean) temperature of the band — ~4% on Mars,
+    // ~14% on the Moon. Thick air (and oceans) even the cycle out.
+    const synod = Number.isFinite(ctx.synodicDay) ? Math.abs(ctx.synodicDay) : 0;
+    const longDay = synod > 0 ? (synod < 88_560 ? Math.sqrt(synod / 88_560) : 1 + 2.1 * clamp(Math.log10(synod / 88_560) / Math.log10(709 / 24.6), 0, 1)) : 0;
+    const diurnal = 1 - 0.045 * longDay * (1 - smoothstep(1e3, 3e4, P));
     // Rebuild cell fields.
     for (let k = 0; k < N; k++) {
       const j = Math.floor(k / nLon);
       const b = band[k];
-      const T = Tn[b] + this.anom[k];
+      const T = Tn[b] * (this.ocean[k] > 0.5 ? 1 : diurnal) + this.anom[k];
       this.Ts[k] = clamp(T, 2.7, 6000);
       this.Ta[k] = this.Ts[k];
       this.tAnnual[k] = this.Ts[k];
@@ -1426,7 +1433,9 @@ export class TerrestrialClimate {
     for (let k = 0; k < N; k++) tMean += this.Ts[k] * grid.cellArea[Math.floor(k / nLon)];
     this.circ.update({ Ts: this.Ts, R, g, omega: ctx.omega, P, molar, Tmean: tMean, locked: ctx.locked, subLat: ctx.illum.length ? Math.asin(clamp(ctx.illum[0].dir[2], -1, 1)) : 0 });
     this.updateSeaLevel();
-    this.computeStats(ctx, bulk, tauDry, dt);
+    // Weathering/escape changed the gases this step: report the current atmosphere.
+    this.bulk = bulkFromMasses(this.gas, R, g);
+    this.computeStats(ctx, this.bulk, tauDry, dt);
     this.version++;
   }
 
@@ -1646,7 +1655,8 @@ export class TerrestrialClimate {
       const W0 = (3e11 / YEAR) * (landArea / 1.33e14);
       const runoff = clamp(pmm / 2.2, 0, 3);
       const wFactor = liquid ? Math.exp((tLand - 288) / 17.7) * Math.pow(runoff, 0.65) : 0;
-      const V = (3e11 / YEAR) * (A / 5.1e14) * clamp(ctx.geothermal / 0.087, 0, 50) * (ctx.mass > 6e23 ? 1 : 0.1);
+      // Volcanic outgassing needs an active mantle: negligible on cold, small worlds like Mars.
+      const V = (3e11 / YEAR) * (A / 5.1e14) * clamp(ctx.geothermal / 0.087, 0, 50) * (ctx.mass > 6e23 ? 1 : 0.1) * smoothstep(0.03, 0.07, ctx.geothermal);
       const pRef = 42;
       let M = this.gas.CO2;
       // Mass of CO₂ at the reference partial pressure (independent of the current amount, so
@@ -2290,7 +2300,7 @@ export class TerrestrialClimate {
     this.civ.seedPopulation = mode === 'modern' ? 8.2e9 : mode === 'preindustrial' ? 1e9 : 1e5;
     if (mode === 'modern') {
       // Present-day Earth: ~140 ppm of today's CO₂ is anthropogenic and still airborne.
-      this.civ.excessCO2 = (17 * 4 * Math.PI * this.R * this.R) / this.g;
+      this.civ.excessCO2 = (0.65 * 17 * 4 * Math.PI * this.R * this.R) / this.g;
     }
     this.version++;
   }
@@ -2358,6 +2368,11 @@ export class TerrestrialClimate {
       // ~12 kg C per m² of forest → CO₂.
       this.gas.CO2 += lost * A * 12 * (44 / 12);
     }
+    this.bulk = bulkFromMasses(this.gas, ctx.R, ctx.g);
+    // Keep the reported vegetation cover in step with land clearing.
+    let veg = 0;
+    for (let k = 0; k < this.grid.N; k++) veg += this.veg[k] * (1 - this.ocean[k]) * this.grid.cellArea[Math.floor(k / this.grid.nLon)];
+    this.stats.vegetation = veg;
   }
 
   /** Mass (kg) of gas `id` corresponding to partial pressure p (Pa) in the current mixture. */

@@ -84,13 +84,14 @@ export class Renderer {
     const overlayPass = new RenderPass(this.overlay, this.cam.camera);
     overlayPass.clear = false; // keep the world's colour and depth
     this.composer.addPass(overlayPass);
-    // Cap what feeds the glare: a star's disk can be 10⁴× brighter than white, and an unbounded
-    // bloom would flood the screen. Anything above the cap is pure white on screen anyway.
+    // Cap what feeds the glare: a star's disk can be 10⁴× brighter than white. The bloom blur
+    // kernels are truncated, so an over-bright source saturates even their edges and the glow
+    // turns into a square. Anything above the cap is pure white on screen anyway.
     this.composer.addPass(
       new ShaderPass({
         uniforms: { tDiffuse: { value: null } },
         vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-        fragmentShader: 'uniform sampler2D tDiffuse; varying vec2 vUv; void main(){ vec4 c = texture2D(tDiffuse, vUv); float l = max(max(c.r, c.g), c.b); gl_FragColor = vec4(c.rgb * min(1.0, 24.0 / max(l, 1e-6)), c.a); }',
+        fragmentShader: 'uniform sampler2D tDiffuse; varying vec2 vUv; void main(){ vec4 c = texture2D(tDiffuse, vUv); float l = max(max(c.r, c.g), c.b); gl_FragColor = vec4(c.rgb * min(1.0, 3.0 / max(l, 1e-6)), c.a); }',
       }),
     );
     this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.55, 0.92);
@@ -232,7 +233,7 @@ export class Renderer {
     this.cam.camera.near = clamp(near * 0.3, 0.2, 1e7);
     this.cam.camera.far = 1e21;
     this.cam.camera.updateProjectionMatrix();
-    this.starfield.update(this.eye.exposure, this.renderer.getPixelRatio(), this.canvas.clientHeight, this.cam.camera.fov);
+    this.starfield.update(this.eye.exposure, this.renderer.getPixelRatio(), this.canvas.clientHeight, this.cam.camera);
     this.updateOrbits(camPos);
     this.updateMarkers(camPos);
     this.updateHZ(camPos, lights);

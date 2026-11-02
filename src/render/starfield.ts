@@ -92,14 +92,16 @@ export class Starfield {
     this.group.add(this.points);
 
     this.skyMat = new THREE.ShaderMaterial({
-      uniforms: { uScale: { value: 1 }, uGalPole: { value: gpV }, uGalCenter: { value: gcV } },
+      uniforms: { uScale: { value: 1 }, uGalPole: { value: gpV }, uGalCenter: { value: gcV }, uProjInv: { value: new THREE.Matrix4() }, uCamRot: { value: new THREE.Matrix3() } },
+      // A full-screen pass: each pixel's view direction comes from the inverse projection, so
+      // the sky stays smooth at any distance (a giant sky sphere broke into flat facets).
       vertexShader: /* glsl */ `
+        uniform mat4 uProjInv; uniform mat3 uCamRot;
         varying vec3 vDir;
         void main(){
-          vDir = normalize(position);
-          vec4 mv = modelViewMatrix * vec4(position, 1.0);
-          gl_Position = projectionMatrix * mv;
-          gl_Position.z = gl_Position.w * 0.999995;
+          vec4 v = uProjInv * vec4(position.xy, -1.0, 1.0); // near plane: finite even with a 1e21 m far plane
+          vDir = uCamRot * (v.xyz / v.w);
+          gl_Position = vec4(position.xy, 1.0, 1.0);
         }`,
       fragmentShader: /* glsl */ `
         uniform float uScale; uniform vec3 uGalPole; uniform vec3 uGalCenter;
@@ -116,17 +118,19 @@ export class Starfield {
           vec3 col = mix(vec3(0.75, 0.78, 0.95), vec3(1.0, 0.86, 0.66), clamp(bulge * 1.4, 0.0, 1.0));
           gl_FragColor = vec4(col * glow * uScale, 1.0);
         }`,
-      side: THREE.BackSide,
       depthWrite: false,
       depthTest: false,
     });
-    this.sky = new THREE.Mesh(new THREE.SphereGeometry(1e17, 48, 24), this.skyMat);
+    this.sky = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.skyMat);
     this.sky.frustumCulled = false;
     this.sky.renderOrder = -30;
     this.group.add(this.sky);
   }
 
-  update(exposure: number, pixelRatio: number, viewportHeight: number, fov: number): void {
+  update(exposure: number, pixelRatio: number, viewportHeight: number, camera: THREE.PerspectiveCamera): void {
+    const fov = camera.fov;
+    (this.skyMat.uniforms.uProjInv.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
+    (this.skyMat.uniforms.uCamRot.value as THREE.Matrix3).setFromMatrix4(camera.matrixWorld);
     const realistic = view.mode === 'realistic';
     this.group.visible = view.background !== 'black';
     this.sky.visible = view.background === 'milkyway';

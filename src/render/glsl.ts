@@ -103,6 +103,10 @@ vec2 raySphere(vec3 ro, vec3 rd, float r){
   h = sqrt(h);
   return vec2(-b - h, -b + h);
 }
+// Light through a scattering haze/cloud layer: unscattered beam plus the forward-scattered
+// diffuse part (two-stream, asymmetry g≈0.75). For thick decks (Venus, Titan) this keeps
+// the ground dimly lit instead of black.
+vec3 hazeT(vec3 tauM){ return max(exp(-tauM), 0.9 / (1.0 + 0.19 * tauM)); }
 float phaseR(float mu){ return 3.0 / (16.0 * PI) * (1.0 + mu * mu); }
 float phaseM(float mu, float g){
   float g2 = g * g;
@@ -132,21 +136,23 @@ vec3 atmosphere(vec3 ro, vec3 rd, float tMax, out vec3 trans){
   float t0 = max(ta.x, 0.0);
   float t1 = min(ta.y, tMax);
   if (t1 <= t0) return vec3(0.0);
-  const int STEPS = 14;
-  float ds = (t1 - t0) / float(STEPS);
+  const int STEPS = 16;
+  float Lp = t1 - t0;
   vec2 odView = vec2(0.0);
   vec3 sumR = vec3(0.0), sumM = vec3(0.0);
   vec3 sumR2 = vec3(0.0), sumM2 = vec3(0.0);
   for (int i = 0; i < STEPS; i++) {
-    vec3 p = ro + rd * (t0 + (float(i) + 0.5) * ds);
+    // Quadratic spacing: fine steps near the camera, where thick air hides everything beyond.
+    float a0 = float(i) / float(STEPS), a1 = float(i + 1) / float(STEPS), am = (float(i) + 0.5) / float(STEPS);
+    float ds = (a1 * a1 - a0 * a0) * Lp;
+    vec3 p = ro + rd * (t0 + am * am * Lp);
     float h = max(length(p) - uGroundR, 0.0);
     vec2 dens = vec2(exp(-h / uHr), exp(-h / uHm)) * ds;
     odView += dens;
     for (int s = 0; s < 2; s++) {
       if (s >= uNumSuns) break;
       vec2 odL = lightDepth(p, uSunDir[s]);
-      vec3 tau = uBetaR * (odView.x + odL.x) + uBetaM * (odView.y + odL.y);
-      vec3 att = exp(-tau);
+      vec3 att = exp(-uBetaR * (odView.x + odL.x)) * hazeT(uBetaM * (odView.y + odL.y));
       if (s == 0) { sumR += dens.x * att; sumM += dens.y * att; }
       else { sumR2 += dens.x * att; sumM2 += dens.y * att; }
     }

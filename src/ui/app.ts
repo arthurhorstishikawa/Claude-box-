@@ -379,9 +379,9 @@ export class App {
       cam.exitSurface();
       cam.dist = b.radius * 3;
     } else {
-      cam.dist = b.radius * 1.002 + 2000;
-      cam.enterSurface();
-      cam.alt = Math.max(cam.alt, 1500);
+      // Arrive ~2.5 km above the ground (for giants: above the cloud tops).
+      const ground = cam.groundHeight ? cam.groundHeight(b, cam.lat, cam.lon) : 0;
+      cam.enterSurface(Math.max(ground, 0) + 2500);
     }
   }
 
