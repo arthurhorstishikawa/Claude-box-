@@ -147,8 +147,14 @@ export class GasGiantClimate {
     const A = this.albedoFor(T1prev);
     const Teq = Math.pow(Math.max(0, (meanIns * (1 - A)) / SIGMA), 0.25);
     const Teff = Math.pow(Math.pow(Teq, 4) + Math.pow(ctx.tInt, 4), 0.25);
-    const T1bar = 1.3 * Teff;
-    const cls = this.classFor(T1bar);
+    // Relax toward the new temperature: cloud-albedo feedback (clouds appear at ~200–260 K and
+    // brighten the planet) would make an undamped iteration flip back and forth.
+    const T1target = 1.3 * Teff;
+    const relax = this.stats.T1bar ? Math.min(0.35, 1 - Math.exp(-dt / (2 * 3.156e7))) : 1;
+    const T1bar = T1prev + (T1target - T1prev) * relax;
+    let cls = this.classFor(T1bar);
+    // Hysteresis so a planet sitting on a boundary doesn't keep announcing changes.
+    if (this.lastClass && cls !== this.lastClass && (this.classFor(T1bar - 15) === this.lastClass || this.classFor(T1bar + 15) === this.lastClass)) cls = this.lastClass;
     if (this.lastClass && cls !== this.lastClass) this.onEvent?.(`Atmosphere changed to Sudarsky class ${CLASS_LABEL[cls]}.`, 'info');
     this.lastClass = cls;
     // Jets from the Rhines scale.

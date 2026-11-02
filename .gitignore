@@ -4,3 +4,4 @@ dist/
 .DS_Store
 screenshots/
 .vite/
+smoke-out/

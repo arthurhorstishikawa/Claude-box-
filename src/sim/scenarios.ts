@@ -2,6 +2,7 @@ import { AU, DAY, DEG, G, M_EARTH, M_JUP, M_SUN, R_EARTH, R_JUP, YEAR } from '..
 import { V3 } from '../core/vec3';
 import { Body, resetBodyIds } from '../physics/body';
 import { eclipticFromRaDec, frameFromPole, makeGiant, makeRocky, makeSmallBody, makeStar, placeOnOrbit, setObliquity } from './factory';
+import { habitableZone } from '../stars/habitableZone';
 
 export interface Scenario {
   id: string;
@@ -13,6 +14,8 @@ export interface Scenario {
   /** Suggested time speed (sim seconds per real second). */
   speed: number;
   build: () => Body[];
+  /** Optional fix-ups once every body's climate has spun up (e.g. tuning a habitable world). */
+  afterLoad?: (sim: { initBody(b: Body): void; bodies: Body[] }) => void;
 }
 
 const EPOCH_TODAY = Date.UTC(2026, 10, 2, 0, 0, 0);
@@ -338,6 +341,27 @@ function buildRogue(): Body[] {
   return [p];
 }
 
+/**
+ * A temperate world around a young brown dwarf. Brown dwarfs never ignite hydrogen fusion;
+ * they glow from contraction heat and fade steadily (L ∝ age^−1.3), so their habitable zone
+ * creeps inward — a world that is temperate today freezes within a few hundred million years.
+ */
+function buildEmber(): Body[] {
+  resetBodyIds(1);
+  const bd = makeStar({ name: 'Ember', mass: 0.065, age: 4.5e8, rotationDays: 0.15 });
+  const hz = habitableZone(bd.star!.L, bd.star!.T);
+  const mid = Math.sqrt(hz.inner * hz.outer);
+  const cinder = makeRocky({ name: 'Cinder', mass: 0.45 * M_EARTH, rotationHours: 24, terrain: 'mercurylike', seed: 1701, initialTemp: 420, internalHeat: 0.05, tidallyLocked: true, color: '#9c9084' });
+  const hearth = makeRocky({ name: 'Hearth', mass: 0.9 * M_EARTH, rotationHours: 24, atmosphere: { N2: 8.5e4, O2: 1.5e4, Ar: 900, CO2: 3.5e4 }, waterGEL: 1800, biosphere: true, terrain: 'earthlike', seed: 1702, initialTemp: 285, tidallyLocked: true, color: '#5a7f9a' });
+  const ash = makeRocky({ name: 'Ash', mass: 0.6 * M_EARTH, composition: { iron: 0.1, rock: 0.5, ice: 0.4, gas: 0 }, rotationHours: 24, atmosphere: { N2: 3e4, CO2: 800 }, waterGEL: 3e4, terrain: 'europalike', seed: 1703, initialTemp: 190, tidallyLocked: true, color: '#d9d2c0' });
+  placeOnOrbit(cinder, bd, { a: hz.inner * 0.55, e: 0.01, i: 0.3, node: 0, peri: 0, M: 40 });
+  placeOnOrbit(hearth, bd, { a: mid * 0.8, e: 0.004, i: 0.1, node: 0, peri: 0, M: 160 });
+  placeOnOrbit(ash, bd, { a: hz.outer * 1.5, e: 0.02, i: 0.5, node: 0, peri: 0, M: 290 });
+  for (const p of [cinder, hearth, ash]) setObliquity(p, bd, 0);
+  hearth.description = 'A tidally locked world warmed by a cooling brown dwarf: an eternal day side, near-black infrared-hungry plants, and a habitable zone that is slowly moving away.';
+  return [bd, cinder, hearth, ash];
+}
+
 function buildEmpty(): Body[] {
   resetBodyIds(1);
   return [sun()];
@@ -375,6 +399,7 @@ export const SCENARIOS: Scenario[] = [
   { id: 'redgiant', name: 'Red-giant Sun', description: 'The Sun swells toward the tip of the red-giant branch, swallowing the inner planets.', epochMs: null, focus: 'Earth', speed: 1e5 * YEAR, build: buildRedGiantSun },
   { id: 'flyby', name: 'Rogue star flyby', description: 'A 0.6 M☉ star plunges through the outer Solar System.', epochMs: EPOCH_TODAY, focus: 'Sun', speed: 30 * DAY, build: buildFlyby },
   { id: 'rogue', name: 'Starless rogue planet', description: 'A free-floating world kept warm by internal heat under thick hydrogen.', epochMs: null, focus: 'Rogue world', speed: DAY, build: buildRogue },
+  { id: 'ember', name: 'Brown dwarf habitable zone', description: 'Hearth orbits a 65-Jupiter-mass brown dwarf every few days. Brown dwarfs cool forever: speed time up and watch the habitable zone slide inward and the world freeze.', epochMs: null, focus: 'Hearth', speed: 3 * 3600, build: buildEmber },
   { id: 'empty', name: 'Empty system', description: 'Just a Sun-like star. Build your own system with the toolbox.', epochMs: null, focus: 'Sun', speed: DAY, build: buildEmpty },
 ];
 

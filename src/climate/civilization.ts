@@ -43,7 +43,10 @@ export interface CivEffects {
  */
 export class Civilization {
   pop: Float64Array;
-  /** 0–1 per cell: brightness of city lights at night. */
+  /**
+   * Fraction of each cell's land that is lit urban area at night (≈0.01–0.02 for Earth-like
+   * densities, up to ~0.3 for megacity regions). The renderer turns it into city clusters.
+   */
   lights: Float64Array;
   era: CivEra;
   /** Technology level: 0..1 agrarian, 1..2 industrial, ≥2 post-carbon. */
@@ -196,17 +199,15 @@ export class Civilization {
       this.excessCO2 -= absorbed;
     }
     const aerosol = this.era === 'industrial' ? 0.012 * (this.emissions / ((4e13 / YEAR) || 1)) : 0;
-    // Night lights.
-    let maxL = 0;
-    const lightTech = this.era === 'agrarian' ? 0.05 : this.era === 'collapsed' ? 0 : 1;
+    // Night lights: urban dwellers × built-up area per dweller, as a fraction of the land.
+    const urbanization = this.era === 'agrarian' ? 0.06 : this.era === 'collapsed' ? 0 : this.era === 'clean' ? 0.72 : 0.3 + 0.25 * smoothstep(1, 1.8, this.tech);
+    const litPerPerson = this.era === 'agrarian' ? 60 : 380; // m² of lit built-up land per urban dweller
     for (let k = 0; k < N; k++) {
       const j = Math.floor(k / w.grid.nLon);
-      const dens = this.pop[k] / Math.max(w.grid.cellArea[j] * w.area, 1);
-      const l = Math.pow(dens / 1e-4, 0.6) * lightTech;
-      this.lights[k] = l;
-      if (l > maxL) maxL = l;
+      const land = Math.max(1 - w.ocean[k], 0.05);
+      const dens = this.pop[k] / Math.max(w.grid.cellArea[j] * w.area * land, 1);
+      this.lights[k] = clamp(dens * urbanization * litPerPerson, 0, 0.35);
     }
-    for (let k = 0; k < N; k++) this.lights[k] = clamp(this.lights[k], 0, 1);
     this.version++;
     return { co2: co2 - absorbed, aerosol };
   }

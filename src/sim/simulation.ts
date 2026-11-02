@@ -95,6 +95,7 @@ export class Simulation {
     const focus = this.bodies.find((b) => b.name === sc.focus) ?? this.bodies[0];
     this.focusId = focus?.id ?? null;
     for (const b of this.bodies) this.initBody(b);
+    sc.afterLoad?.(this);
     this.keplerDirty = true;
     this.events.emit('reset', undefined);
   }
@@ -144,6 +145,17 @@ export class Simulation {
   private spinUp(b: Body): void {
     const c = b.climate;
     if (!c) return;
+    // Transients while the climate settles are not news: mute its event messages.
+    const say = c.onEvent;
+    c.onEvent = null;
+    try {
+      this.spinUpSteps(b, c);
+    } finally {
+      c.onEvent = say;
+    }
+  }
+
+  private spinUpSteps(b: Body, c: TerrestrialClimate | GasGiantClimate): void {
     const il = this.illuminators(b);
     const orbitP = il.length && Number.isFinite(il[0].orbitPeriod) ? il[0].orbitPeriod : YEAR;
     if (c instanceof TerrestrialClimate) {

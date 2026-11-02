@@ -20,13 +20,19 @@ export interface HabitableZone {
   optimisticOuter: number;
 }
 
+/**
+ * Effective stellar flux at each habitable-zone edge. The fit covers 2600–7200 K; cooler
+ * hosts (late M dwarfs and brown dwarfs, whose light is mostly near-infrared) use the
+ * 2600 K values — the edge fluxes change only slowly that far to the red, and brown dwarfs
+ * really can host temperate planets on close, tidally locked orbits.
+ */
 export function effectiveFlux(kind: keyof typeof COEFFS, teff: number): number {
   const [s, a, b, c, d] = COEFFS[kind];
   const t = clamp(teff, 2600, 7200) - 5780;
   return s + a * t + b * t * t + c * t * t * t + d * t * t * t * t;
 }
 
-/** Habitable-zone distances for a star of luminosity L (W) and effective temperature T. */
+/** Habitable-zone distances for a star, brown dwarf or white dwarf of luminosity L (W) and effective temperature T. */
 export function habitableZone(L: number, teff: number): HabitableZone {
   const l = L / L_SUN;
   const d = (k: keyof typeof COEFFS) => Math.sqrt(l / effectiveFlux(k, teff)) * AU;
