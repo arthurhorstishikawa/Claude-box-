@@ -422,6 +422,63 @@ export function tuneTemperate(sim: { initBody(b: Body): void }, b: Body, target?
   }
 }
 
+/**
+ * One random planet for an existing system: a rocky world or a gas/ice giant on an orbit
+ * that keeps ≥ 8–10 mutual Hill radii from the planets already there. Its type, size, air and
+ * water follow from where it lands (same rules as the system generator). Returns null if no
+ * stable orbit is left.
+ */
+export function randomPlanet(kind: 'rocky' | 'gas', host: Body, existing: { a: number; m: number }[], seed: number): Body | null {
+  const rng = new Rng(seed * 2654435761 + 99);
+  const L = Math.max(host.star?.L ?? 0, 1e-12 * L_SUN);
+  const Teff = host.star?.T ?? 3000;
+  const hz = habitableZone(L, Teff);
+  const snow = frostLine(L);
+  const mSun = host.mass / M_SUN;
+  const small = mSun < 0.15;
+  const aMin = Math.max(4 * host.radius, 0.03 * AU * Math.sqrt(L / L_SUN), 0.25 * hz.inner, 0.004 * AU * Math.cbrt(mSun));
+  const aMax = Math.max(aMin * 8, Math.min(45 * AU * Math.sqrt(mSun), Math.max(snow * 25, 0.5 * AU)));
+  const mass = kind === 'gas' ? (rng.chance(small ? 0.6 : 0.35) ? logRange(rng, 8, 30) * M_EARTH : logRange(rng, 0.1, small ? 0.5 : 3) * M_JUP) : 0;
+  const ok = (a: number, m: number) =>
+    existing.every((e) => {
+      const giants = m > 10 * M_EARTH || e.m > 10 * M_EARTH;
+      const x = (giants ? 10 : 8) * 0.5 * Math.cbrt((m + e.m) / (3 * host.mass));
+      const r = (1 + x) / (1 - Math.min(x, 0.9));
+      return a > e.a * r || a < e.a / r;
+    });
+  let a = 0;
+  for (let t = 0; t < 60 && !a; t++) {
+    let c: number;
+    if (kind === 'gas') c = rng.chance(0.7) ? logRange(rng, Math.max(aMin, snow), Math.max(aMin * 1.1, Math.min(aMax, snow * 10))) : logRange(rng, aMin, aMax);
+    else c = rng.chance(0.5) ? logRange(rng, hz.optimisticInner, hz.optimisticOuter) : logRange(rng, aMin, Math.min(aMax, snow * 4));
+    if (c >= aMin && c <= aMax && ok(c, kind === 'gas' ? mass : 3 * M_EARTH)) a = c;
+  }
+  if (!a) return null;
+  const T = teq(L, a);
+  const locked = a < 0.3 * AU * Math.cbrt(mSun);
+  const name = properName(rng);
+  let b: Body;
+  if (kind === 'gas') {
+    const ice = mass < 40 * M_EARTH;
+    b = makeGiant({ name, mass, rotationHours: locked ? 24 : rng.range(9, 18), seed: rng.int(1, 1e9), ice, tidallyLocked: locked, rings: rng.chance(0.3) ? { inner: 1.25, outer: rng.range(1.8, 2.6), opacity: rng.range(0.4, 0.9) } : undefined });
+    if (b.rings) {
+      b.rings.inner *= b.radius;
+      b.rings.outer *= b.radius;
+    }
+  } else {
+    const earthFlux = effectiveFlux('runaway', Teff) / effectiveFlux('runaway', 5780);
+    const Seff = L / L_SUN / (a / AU) ** 2 / Math.sqrt(earthFlux);
+    const inHZ = a >= hz.inner && a <= hz.outer;
+    const opts: SystemOptions = { seed, star: 'G', planets: 1, habitable: false, life: rng.chance(0.6), civilization: 'none', moons: false, belt: false };
+    b = makeWorld(rng, name, T, a, hz, inHZ && rng.chance(0.7), false, opts, locked, rng.int(1, 1e9), small, Seff);
+    b.name = name;
+  }
+  placeOnOrbit(b, host, { a, e: Math.min(0.12, Math.abs(rng.gauss()) * 0.035), i: Math.abs(rng.gauss()) * 1.2, node: rng.range(0, 360), peri: rng.range(0, 360), M: rng.range(0, 360) });
+  if (b.tidallyLocked) setObliquity(b, host, 0);
+  else setObliquity(b, host, rng.chance(0.1) ? rng.range(40, 100) : rng.range(0, 32), rng.range(0, 360));
+  return b;
+}
+
 /** Wrap a generated system as a loadable scenario. */
 export function systemScenario(o: SystemOptions): Scenario & { summary: string } {
   const sc: Scenario & { summary: string } = {

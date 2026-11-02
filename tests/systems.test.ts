@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AU, DAY, L_SUN, YEAR } from '../src/core/constants';
 import { TerrestrialClimate } from '../src/climate/terrestrial';
 import { habitableZone } from '../src/stars/habitableZone';
-import { generateSystem, systemScenario, type StarPreset } from '../src/sim/generator';
+import { generateSystem, randomPlanet, systemScenario, type StarPreset } from '../src/sim/generator';
 import { findScenario } from '../src/sim/scenarios';
 import { Simulation } from '../src/sim/simulation';
 
@@ -98,5 +98,23 @@ describe('system generator', () => {
     console.log(`${sc.name}: ${sc.summary} → ${f.name} ${c.stats.meanT.toFixed(1)} K`);
     expect(c.stats.meanT).toBeGreaterThan(230);
     expect(c.stats.meanT).toBeLessThan(330);
+  });
+});
+
+describe('random planet generator', () => {
+  it('adds rocky and gas planets on stable orbits around an existing star', () => {
+    const sim = new Simulation();
+    sim.loadScenario(findScenario('solar'));
+    const sun = sim.bodies.find((b) => b.name === 'Sun')!;
+    for (const kind of ['rocky', 'gas'] as const)
+      for (let seed = 1; seed <= 6; seed++) {
+        const existing = sim.bodies.filter((b) => b !== sun && !b.isStarLike && sim.primaryOf(b) === sun).map((b) => ({ a: b.pos.distTo(sun.pos), m: b.mass }));
+        const p = randomPlanet(kind, sun, existing, seed);
+        if (!p) continue; // the system can fill up
+        expect(kind === 'gas' ? p.isGiant : !!p.world).toBe(true);
+        const a = p.pos.distTo(sun.pos);
+        for (const e of existing) expect(Math.abs(Math.log(a / e.a))).toBeGreaterThan(0.05);
+        sim.addBody(p);
+      }
   });
 });

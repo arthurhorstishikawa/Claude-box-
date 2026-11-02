@@ -78,6 +78,7 @@ async function scenario(id) {
     /** Stand on body `b` at an angular offset from the sub-stellar point. */
     a.land = (b, s, dLat, dLon, alt, heading, pitch) => {
       const cam = a.renderer.cam;
+      a.sim.speed = 1; // real time, so the landing site keeps its time of day
       a.sim.setFocus(b.id);
       cam.focus(b, { instant: true });
       const sp = a.subPoint(b, s);

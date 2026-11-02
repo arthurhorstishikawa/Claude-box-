@@ -378,7 +378,7 @@ export class RockyView extends BodyView {
     cu.uClimB.value = tex?.climB ?? this.dummy;
     cu.uWind.value = tex?.wind ?? this.dummy;
     cu.uTime.value = ctx.realTime;
-    cu.uOpacity.value = 1 - volFade;
+    cu.uOpacity.value = (1 - volFade) * clamp((c?.P ?? 1e5) / 2e4, 0.25, 1);
     cu.uFlowScale.value = 1;
     setLights(cu, b, ctx);
     setAtmo(cu);
@@ -406,7 +406,9 @@ export class RockyView extends BodyView {
       vu.uShellIn.value = base + cloudAlt * 0.2;
       vu.uShellOut.value = base + this.cloudTop;
       vu.uScale.value = 1 / (cloudAlt * 1.3);
-      vu.uDensity.value = 1 / (cloudAlt * 0.12);
+      // Clouds in thin air (Mars) are wisps of ice, not thick decks.
+      const thin = clamp((c?.P ?? 1e5) / 3e4, 0.06, 1);
+      vu.uDensity.value = thin / (cloudAlt * 0.12);
       vu.uTime.value = ctx.realTime;
       vu.uOpacity.value = volFade;
       (vu.uCloudColor.value as THREE.Vector3).copy(deckCol);

@@ -169,8 +169,9 @@ and the generated hypsometry. Any world's terrain can be re-rolled from the insp
   least 8–10 mutual Hill radii apart for long-term stability. A guaranteed habitable world is
   placed at the Earth-equivalent flux for the star's spectrum, and its CO₂ is tuned by
   geometric bisection against the climate model (a stand-in for the carbonate–silicate
-  thermostat). **Design a planet** sets mass, orbit, spin, tilt, air, water, terrain, life and
-  civilization by hand.
+  thermostat). **🎲 Random rocky / giant** adds one random planet to the current system on an
+  orbit ≥ 8–10 mutual Hill radii from its neighbours; **Design a planet** sets mass, orbit,
+  spin, tilt, air, water, terrain, life and civilization by hand.
 * **Brown dwarfs** have habitable zones too: they glow from contraction heat and fade as
   L ∝ age^−1.3, so their zones (and worlds' climates) slide inward over time. White dwarfs
   likewise. HZ rings, inspector values and a "zone in 1 Gyr" readout show it.

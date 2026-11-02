@@ -33,8 +33,9 @@ civilization industrialize — and watch the climate respond.
   around any kind of star (Sun-like, K, M, ultracool, brown dwarf, white dwarf, binary). Planets
   form where physics puts them (rocky inside the snow line, giants beyond it), are spaced for
   long-term stability, and a guaranteed habitable world gets its CO₂ tuned against the climate
-  model. *Design a planet* lets you set mass, orbit, spin, air, water, terrain, life and
-  civilization by hand.
+  model. In the toolbox, **🎲 Random rocky** and **🎲 Random giant** drop a random planet onto a
+  stable orbit around the current star (type, air and water follow from where it lands), and
+  *Design a planet* lets you set everything by hand.
 - **Rendering**: HDR with **human-eye adaptation** in *Realistic* mode (fly close to a star
   and everything else vanishes; on a planet's night side your eye adapts and the stars and
   Milky Way come out), an *Enhanced* mode that keeps everything visible, Milky Way / stars /

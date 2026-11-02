@@ -17,7 +17,7 @@ import { ERA_LABEL } from '../climate/civilization';
 import { stormCategory } from '../climate/storms';
 import { makeGiant, makeRocky, makeSmallBody, makeStar, placeOnOrbit, refreshStar, setObliquity } from '../sim/factory';
 import { SCENARIOS, findScenario, type Scenario } from '../sim/scenarios';
-import { STAR_PRESETS, systemScenario, tuneTemperate, type StarPreset, type SystemOptions } from '../sim/generator';
+import { randomPlanet, STAR_PRESETS, systemScenario, tuneTemperate, type StarPreset, type SystemOptions } from '../sim/generator';
 import { CHALLENGES, updateChallenge, type ChallengeState } from '../sim/challenges';
 import { deleteSlot, listSlots, loadSim, loadSlot, saveSlot, serializeSim } from '../sim/save';
 import type { Simulation } from '../sim/simulation';
@@ -148,6 +148,14 @@ export class App {
       if (group === 'Planets') {
         const d = h('div', { class: 'card wide', title: 'Set mass, orbit, air, water, terrain and life, then add it' }, h('span', { class: 'dot', style: 'background:conic-gradient(#4f86c6,#d9b06a,#c1440e,#8fc3e0,#4f86c6)' }), '✎ Design a planet…');
         d.addEventListener('click', () => this.planetDesignerModal());
+        for (const [kind, label, bg] of [
+          ['rocky', '🎲 Random rocky', '#9a7b5a'],
+          ['gas', '🎲 Random giant', '#d9b98c'],
+        ] as const) {
+          const r = h('div', { class: 'card', title: `Generate a random ${kind === 'gas' ? 'gas or ice giant' : 'rocky planet'} on a stable orbit around the current star` }, h('span', { class: 'dot', style: `background:${bg}` }), label);
+          r.addEventListener('click', () => this.addRandomPlanet(kind));
+          cards.appendChild(r);
+        }
         cards.appendChild(d);
       }
       for (const t of TEMPLATES.filter((x) => x.group === group)) {
@@ -1137,6 +1145,38 @@ export class App {
         h('div', { class: 'row', style: 'margin-top:12px;justify-content:flex-end' }, h('button', { onclick: () => go(0) }, 'Just the star'), h('button', { class: 'primary', onclick: () => go() }, 'Generate system')),
       ),
     );
+  }
+
+  /** Random planet around the selected/focused body's star, on an orbit that stays stable. */
+  private addRandomPlanet(kind: 'rocky' | 'gas'): void {
+    const sel = this.selected() ?? this.sim.focus();
+    const starOf = (b: Body | null): Body | null => {
+      for (let x = b, n = 0; x && n < 6; x = this.sim.primaryOf(x), n++) if (x.star && x.star.L > 0) return x;
+      return null;
+    };
+    const host = starOf(sel) ?? this.sim.bodies.filter((b) => b.star && b.star.L > 0).sort((a, b) => b.star!.L - a.star!.L)[0];
+    if (!host) {
+      this.toast('Add a star first — a planet needs something to orbit.', 'warn');
+      return;
+    }
+    const existing = this.sim.bodies.filter((b) => b !== host && !b.isStarLike && this.sim.primaryOf(b) === host).map((b) => ({ a: b.pos.distTo(host.pos), m: b.mass }));
+    const b = randomPlanet(kind, host, existing, seed() * 7919 + Date.now() % 100000);
+    if (!b) {
+      this.toast(`No stable orbit left around ${host.name}.`, 'warn');
+      return;
+    }
+    let n = 1;
+    const base = b.name;
+    while (this.sim.bodies.some((o) => o.name === base && o !== b) && n < 50) b.name = `${base} ${++n}`;
+    this.withLoading(() => {
+      this.sim.addBody(b);
+      const hz = habitableZone(host.star!.L, host.star!.T);
+      const d = b.pos.distTo(host.pos);
+      if (b.world && b.world.waterGEL > 100 && (b.world.atmosphere.N2 ?? 0) > 1e4 && d > hz.inner && d < hz.outer) tuneTemperate(this.sim, b);
+      this.focusBody(b);
+      const c = b.climate instanceof TerrestrialClimate ? b.climate : null;
+      this.toast(`${b.name}: ${kindLabel(b, host)} at ${d / AU < 0.1 ? `${sig((d / AU) * 1000, 3)} mAU` : `${sig(d / AU, 3)} AU`}${c ? `, ${fmtTemp(c.stats.meanT)}` : ''}.`, 'success', b.id);
+    });
   }
 
   /** Custom planet: everything the climate model needs, placed on an orbit of your choice. */
