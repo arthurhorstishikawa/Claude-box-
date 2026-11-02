@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { COLORMAP_GLSL, EQUIRECT_GLSL, LOGDEPTH_F, LOGDEPTH_PARS_F, LOGDEPTH_PARS_V, LOGDEPTH_V, NOISE_GLSL, SCATTER_GLSL } from './glsl';
+import { COLORMAP_GLSL, COVER_GLSL, EQUIRECT_GLSL, LOGDEPTH_F, LOGDEPTH_PARS_F, LOGDEPTH_PARS_V, LOGDEPTH_V, NOISE_GLSL, SCATTER_GLSL } from './glsl';
 
 const v3 = (r = 0, g = 0, b = 0) => new THREE.Vector3(r, g, b);
 const sunUniforms = () => ({
@@ -60,8 +60,8 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
       uSeaLevel: { value: 0 },
       uHasOcean: { value: 0 },
       uWetWorld: { value: 0 },
-      uLiquidDeep: { value: v3(0.01, 0.05, 0.14) },
-      uLiquidShallow: { value: v3(0.04, 0.2, 0.3) },
+      uLiquidDeep: { value: v3(0.006, 0.022, 0.06) },
+      uLiquidShallow: { value: v3(0.03, 0.12, 0.16) },
       uRockA: { value: v3(0.3, 0.27, 0.24) },
       uRockB: { value: v3(0.5, 0.45, 0.4) },
       uSand: { value: v3(0.62, 0.52, 0.36) },
@@ -204,21 +204,22 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
         // Molten rock and city lights glow on their own.
         if (Ts > 750.0) col += glowColor(Ts) * glowIntensity(Ts) * smoothstep(750.0, 1100.0, Ts) * uExposure;
         if (lights > 0.0 && uLayer == 0 && !ocean) {
-          // 'lights' is the fraction of land that is lit urban area. Regional variation first,
-          // then cities: a pixel is urban when a multi-scale pattern exceeds the threshold that
-          // leaves exactly that fraction lit. Seen from far away, the mean shows instead.
-          float c1 = snoise(d * 90.0) * 0.5 + 0.5;
-          float f = clamp(lights * (0.3 + 1.6 * smoothstep(0.35, 0.8, c1)), 1e-5, 0.6);
-          float c2 = snoise(d * 400.0 + 2.0) * 0.5 + 0.5;
-          float c3 = nz(d + 4.0, 1800.0);
-          float c4 = nz(d + 6.0, 9000.0);
-          float p = 0.55 * c2 + 0.3 * c3 + 0.15 * c4;
-          // Upper-tail normal quantile (Abramowitz & Stegun 26.2.23) for the threshold.
+          // 'lights' is the fraction of land that is lit urban area. The light is gathered into
+          // clusters by thresholding multi-scale noise (regions ~100 km, cities ~20 km, towns,
+          // streets) so that exactly that fraction is lit. Octaves finer than a pixel drop out
+          // and the threshold adapts to the remaining spread; with nothing resolved the mean
+          // brightness shows, so the total light never depends on distance.
+          float f = clamp(lights, 1e-5, 0.6);
+          float w1 = 0.45 * aa(60.0), w2 = 0.3 * aa(300.0), w3 = 0.17 * aa(1500.0), w4 = 0.08 * aa(8000.0);
+          float n4 = snoise(d * 8000.0 + 6.0);
+          float p = w1 * snoise(d * 60.0) + w2 * snoise(d * 300.0 + 2.0) + w3 * snoise(d * 1500.0 + 4.0) + w4 * n4;
+          float sd = 0.33 * sqrt(w1 * w1 + w2 * w2 + w3 * w3 + w4 * w4);
+          // Upper-tail normal quantile (Abramowitz & Stegun 26.2.23): P(p > z·sd) = f.
           float tq = sqrt(-2.0 * log(f));
           float z = tq - (2.515517 + 0.802853 * tq + 0.010328 * tq * tq) / (1.0 + 1.432788 * tq + 0.189269 * tq * tq + 0.001308 * tq * tq * tq);
-          float thr = 0.5 + 0.13 * z;
-          float mask = smoothstep(thr - 0.015, thr + 0.015, p) * (0.6 + 0.8 * c4);
-          float lit = mix(f, mask, aa(400.0));
+          float thr = z * sd;
+          float mask = smoothstep(thr - 0.12 * sd, thr + 0.12 * sd, p) * mix(1.0, 0.55 + 0.9 * (n4 * 0.5 + 0.5), w4 / 0.08);
+          float lit = mix(f, mask, smoothstep(0.02, 0.1, sd));
           col += uLightsColor * lit * uLightsScale * (1.0 - dayness);
         }
         if (uHasAtm > 0.5) {
@@ -265,6 +266,7 @@ export function makeCloudShellMaterial(): THREE.ShaderMaterial {
       ${EQUIRECT_GLSL}
       ${NOISE_GLSL}
       ${SCATTER_GLSL}
+      ${COVER_GLSL}
       uniform vec3 uPlanetCenter;
       uniform sampler2D uClimB, uWind;
       uniform float uTime, uOpacity, uFlowScale;
@@ -282,11 +284,16 @@ export function makeCloudShellMaterial(): THREE.ShaderMaterial {
         vec3 flow = (east * wind.x + north * wind.y) * 2e-4 * uFlowScale;
         float ph0 = fract(uTime * 0.05), ph1 = fract(uTime * 0.05 + 0.5);
         float w0 = 1.0 - abs(2.0 * ph0 - 1.0);
-        vec3 p = d * 9.0;
+        // Domain warping turns isotropic noise into fronts, streets and swirls.
+        vec3 p = d * 5.0;
+        p += vec3(fbm3(p * 0.7 + 11.0, 3), fbm3(p * 0.7 + 23.0, 3), fbm3(p * 0.7 + 37.0, 3)) * 0.9;
         float n0 = fbm3(p + flow * ph0 * 40.0, 6);
         float n1 = fbm3(p + flow * ph1 * 40.0 + 13.7, 6);
         float n = mix(n1, n0, w0) * 0.5 + 0.5;
-        float dens = smoothstep(1.0 - cov, 1.0 - cov + 0.35, n + 0.12 * cov);
+        // fbm noise here is ~normal with mean 0.5 and s.d. ≈ 0.09: threshold it so the drawn
+        // cover equals the model's cloud fraction, with soft, thicker-in-the-middle clouds.
+        float thr = coverThreshold(cov, 0.5, 0.09);
+        float dens = smoothstep(thr - 0.03, thr + 0.08, n) * (0.75 + 0.25 * smoothstep(thr, thr + 0.2, n));
         // Storm systems: spiral bands around a clear eye.
         for (int i = 0; i < 12; i++) {
           if (i >= uNumStorms) break;
@@ -412,6 +419,7 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
       ${LOGDEPTH_PARS_F}
       ${EQUIRECT_GLSL}
       ${SCATTER_GLSL}
+      ${COVER_GLSL}
       uniform vec3 uPlanetCenter;
       uniform sampler3D uNoise;
       uniform sampler2D uClimB, uBands;
@@ -438,12 +446,15 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
           deck += smoothstep(0.06 + 0.1 * tower, 0.0, abs(h - top));
           deck += smoothstep(0.09, 0.0, abs(h - 0.55)) * 0.85;
           deck += smoothstep(0.12, 0.0, abs(h - 0.29));
-          float cov = 0.35 + 0.35 * band + 0.25 * tower;
-          return deck * smoothstep(1.0 - cov, 1.0 - cov + 0.2, n);
+          float cov = clamp(0.4 + 0.35 * band + 0.25 * tower, 0.0, 0.97);
+          float thr = coverThreshold(cov, 0.316, 0.113);
+          return deck * smoothstep(thr - 0.03, thr + 0.05, n);
         }
         float cov = sampleEqLod0(uClimB, db).r;
         float prof = smoothstep(0.0, 0.12, h) * (1.0 - smoothstep(0.35 + 0.6 * cov, 0.95, h));
-        return prof * smoothstep(1.0 - cov, 1.0 - cov + 0.3, n);
+        // The 3D noise sum has mean 0.316 and s.d. 0.113 (measured): cover matches the model.
+        float thr = coverThreshold(cov, 0.316, 0.113);
+        return prof * smoothstep(thr - 0.02, thr + 0.06, n);
       }
       void main(){
         vec3 rd = normalize(vWorld);
@@ -474,7 +485,7 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
         const int STEPS = 44;
         float L = t1 - t0;
         // Interleaved-gradient jitter (mild) hides step banding without coarse grain.
-        float jitter = 0.5 + 0.5 * (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5);
+        float jitter = 0.5 + 0.2 * (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5);
         // Atmospheric reddening of sunlight, evaluated once near the start of the path.
         vec3 sunRad[2];
         for (int s = 0; s < 2; s++) {
@@ -760,7 +771,9 @@ export function makeStarMaterial(): THREE.ShaderMaterial {
         float limb = 1.0 - 0.6 * (1.0 - mu) - 0.15 * (1.0 - mu) * (1.0 - mu);
         float g = fbm3(d * uCellScale + vec3(0.0, 0.0, uTime * 0.05), 4) * 0.5 + 0.5;
         float gran = 0.82 + 0.3 * g;
-        float spot = smoothstep(0.62, 0.72, fbm3(d * 3.0 + uTime * 0.003, 4) * 0.5 + 0.5) * uSpots;
+        float sp = fbm3(d * 9.0 + uTime * 0.003, 4) * 0.5 + 0.5;
+        float band = 1.0 - smoothstep(0.25, 0.6, abs(d.z)); // spots prefer low latitudes
+        float spot = (smoothstep(0.66, 0.7, sp) * 0.55 + smoothstep(0.71, 0.74, sp) * 0.45) * uSpots * band;
         float fac = 0.88 + 0.12 * (fbm3(d * 6.0 - uTime * 0.01, 3) * 0.5 + 0.5);
         vec3 col = uColor * uRadiance * limb * gran * fac * (1.0 - 0.75 * spot);
         gl_FragColor = vec4(min(col, vec3(3.0e4)), 1.0); // stay inside half-float range

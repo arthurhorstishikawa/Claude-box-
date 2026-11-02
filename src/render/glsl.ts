@@ -160,7 +160,23 @@ vec3 atmosphere(vec3 ro, vec3 rd, float tMax, out vec3 trans){
     vec3 m = s == 0 ? sumM : sumM2;
     col += uSunRadiance[s] * (r * uBetaR * phaseR(mu) + m * uBetaM * uMieAlbedo * phaseM(mu, uMieG));
   }
-  return col * PI; // radiance relative to a sunlit white Lambertian surface (E/π)
+  // Radiance relative to a sunlit white Lambertian surface (E/π). Single scattering misses
+  // roughly a third to a half of real skylight; a constant factor stands in for higher orders.
+  return col * PI * 1.6;
+}
+`;
+
+/**
+ * Threshold on a roughly normal noise value (mean mu, s.d. sd) that leaves a fraction `cover`
+ * of samples above it, so drawn cloud cover matches the climate model's cloud fraction.
+ */
+export const COVER_GLSL = /* glsl */ `
+float coverThreshold(float cover, float mu, float sd){
+  float c = clamp(cover, 0.002, 0.998);
+  float p = c < 0.5 ? c : 1.0 - c;
+  float t = sqrt(-2.0 * log(p));
+  float z = t - (2.515517 + 0.802853 * t + 0.010328 * t * t) / (1.0 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t);
+  return mu + sd * (c < 0.5 ? z : -z);
 }
 `;
 

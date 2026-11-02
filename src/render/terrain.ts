@@ -258,8 +258,12 @@ export function buildPatchGeometry(node: PatchNode, hf: HeightField, seaLevel: n
   return g;
 }
 
-/** Choose the visible leaf patches for a camera at `camBody` (body frame, metres). */
-export function selectPatches(R: number, camBody: V3, maxDepth: number, splitFactor = 2.3, maxElev = 9000): PatchNode[] {
+/**
+ * Choose the visible leaf patches for a camera at `camBody` (body frame, metres). A patch
+ * splits when the camera is within `splitFactor` patch-sizes of it, measured to the ground
+ * under the patch centre (`groundAt`, m above R) — so the leaf count grows only with depth.
+ */
+export function selectPatches(R: number, camBody: V3, maxDepth: number, splitFactor = 2.3, maxElev = 9000, groundAt?: (d: V3) => number): PatchNode[] {
   const out: PatchNode[] = [];
   const camDist = camBody.len();
   const camDir = camBody.clone().scale(1 / Math.max(camDist, 1));
@@ -274,9 +278,10 @@ export function selectPatches(R: number, camBody: V3, maxDepth: number, splitFac
     const arc = size * 0.85;
     const ang = Math.acos(clamp(c.dot(camDir), -1, 1));
     if (ang - arc > hor + 0.02 && depth > 0) return;
-    const radius = arc * R + maxElev;
-    const dist = Math.max(0, Math.hypot(c.x * R - camBody.x, c.y * R - camBody.y, c.z * R - camBody.z) - radius * 0.5);
-    if (depth < maxDepth && dist < radius * splitFactor) {
+    const half = arc * R; // patch half-diagonal (m)
+    const rg = R + (groundAt ? groundAt(c) : 0);
+    const dist = Math.max(0, Math.hypot(c.x * rg - camBody.x, c.y * rg - camBody.y, c.z * rg - camBody.z) - half);
+    if (depth < maxDepth && dist < half * splitFactor) {
       visit(face, 2 * ix, 2 * iy, depth + 1);
       visit(face, 2 * ix + 1, 2 * iy, depth + 1);
       visit(face, 2 * ix, 2 * iy + 1, depth + 1);

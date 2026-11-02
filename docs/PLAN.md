@@ -158,9 +158,25 @@ and the generated hypsometry. Any world's terrain can be re-rolled from the insp
   scene (auto circular orbit), edit mass, orbit, spin, tilt, atmosphere gases, water, internal
   heat, sunshades/mirrors; seed life; bombard with comets; delete/duplicate.
 * **Time**: pause to 1 Gyr per second, automatic integrator switching.
-* **Scenarios**: Solar System (J2000), Earth & Moon, TRAPPIST-1, Proxima b eyeball world,
-  twin suns, hot Jupiter, lava world, Snowball Earth, early Mars, future red-giant Sun,
-  rogue star flyby, empty system.
+* **Scenarios**: Solar System (today), Earth & Moon, TRAPPIST-1, Proxima b eyeball world,
+  twin suns, Alpha Centauri, hot Jupiter & lava world, Snowball Earth, early Mars, Earth in a
+  billion years, red-giant Sun, rogue star flyby, starless rogue planet, brown-dwarf habitable
+  zone, empty system.
+* **Custom systems** (✨ Create): choose a star (G, K, M, ultracool, brown dwarf, F, A, white
+  dwarf, close binary) and generate a planetary system: period ratios of ~1.4–2.4, rocky
+  worlds inside the snow line, giants beyond it (rarer around small stars), ice giants and icy
+  dwarfs farther out, moons inside 0.35 Hill radii, an optional belt. Neighbours are spaced at
+  least 8–10 mutual Hill radii apart for long-term stability. A guaranteed habitable world is
+  placed at the Earth-equivalent flux for the star's spectrum, and its CO₂ is tuned by
+  geometric bisection against the climate model (a stand-in for the carbonate–silicate
+  thermostat). **Design a planet** sets mass, orbit, spin, tilt, air, water, terrain, life and
+  civilization by hand.
+* **Brown dwarfs** have habitable zones too: they glow from contraction heat and fade as
+  L ∝ age^−1.3, so their zones (and worlds' climates) slide inward over time. White dwarfs
+  likewise. HZ rings, inspector values and a "zone in 1 Gyr" readout show it.
+* **City lights** are the lit urban fraction of land (urban dwellers × ~380 m² of lit ground
+  each), rendered as clusters at metro, town and street scales whose mean matches that
+  fraction — not a continent-wide glow.
 * **Challenges**: terraform Mars, cool Venus, escape Snowball Earth, save Earth from the
   brightening Sun, make an eyeball world habitable. Objectives must be sustained for a
   period of simulated time.
@@ -178,6 +194,7 @@ and the generated hypsometry. Any world's terrain can be re-rolled from the insp
 7. UI (toolbox, inspector, time bar, map, charts, notifications, help, settings).
 8. Headless browser smoke tests & screenshot review; performance tuning.
 9. README, Pages deployment.
+10. Custom system generator, planet designer, brown-dwarf habitable zones.
 
 ## 8. Future ideas
 

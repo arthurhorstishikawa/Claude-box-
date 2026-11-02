@@ -82,7 +82,8 @@ export class Starfield {
         }`,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
-      depthTest: false,
+      // Depth-tested so planets hide the stars behind them (points sit just inside the far plane).
+      depthTest: true,
       transparent: true,
     });
     this.points = new THREE.Points(geo, this.starMat);

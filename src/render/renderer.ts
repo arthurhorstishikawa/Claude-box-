@@ -4,6 +4,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { Pass } from 'three/examples/jsm/postprocessing/Pass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { AU, G } from '../core/constants';
 import { clamp } from '../core/math';
 import { V3 } from '../core/vec3';
@@ -81,6 +82,15 @@ export class Renderer {
     const overlayPass = new RenderPass(this.overlay, this.cam.camera);
     overlayPass.clear = false; // keep the world's colour and depth
     this.composer.addPass(overlayPass);
+    // Cap what feeds the glare: a star's disk can be 10⁴× brighter than white, and an unbounded
+    // bloom would flood the screen. Anything above the cap is pure white on screen anyway.
+    this.composer.addPass(
+      new ShaderPass({
+        uniforms: { tDiffuse: { value: null } },
+        vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: 'uniform sampler2D tDiffuse; varying vec2 vUv; void main(){ vec4 c = texture2D(tDiffuse, vUv); float l = max(max(c.r, c.g), c.b); gl_FragColor = vec4(c.rgb * min(1.0, 24.0 / max(l, 1e-6)), c.a); }',
+      }),
+    );
     this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.55, 0.92);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());

@@ -124,35 +124,38 @@ function act(fn, arg) {
 
 const shots = [
   { name: 'solar-overview', scenario: 'solar', run: () => act((a) => a.app.focusBody(a.body('Earth'))) },
-  { name: 'earth-orbit-realistic', run: () => act((a) => { a.sim.speed = 60; a.orbitView(a.body('Earth'), a.body('Sun'), 55, 15); }) },
-  { name: 'earth-orbit-enhanced', run: () => act((a) => a.setView('mode', 'enhanced')) },
-  { name: 'earth-night-enhanced', run: () => act((a) => a.orbitView(a.body('Earth'), a.body('Sun'), 165, 10)) },
+  { name: 'earth-orbit-realistic', run: () => act((a) => { a.setView('mode', 'realistic'); a.sim.speed = 60; a.orbitView(a.body('Earth'), a.body('Sun'), 55, 15); }) },
+  { name: 'earth-orbit-enhanced', run: () => act((a) => { a.setView('mode', 'enhanced'); a.orbitView(a.body('Earth'), a.body('Sun'), 55, 15); }) },
+  { name: 'earth-night-enhanced', run: () => act((a) => { a.setView('mode', 'enhanced'); a.orbitView(a.body('Earth'), a.body('Sun'), 165, 10); }) },
   { name: 'earth-limb', run: () => act((a) => { a.setView('mode', 'realistic'); a.orbitView(a.body('Earth'), a.body('Sun'), 80, 4, 1.25); }) },
-  { name: 'sun-close-realistic', run: () => act((a) => a.orbitView(a.body('Sun'), a.body('Earth'), 20, 10, 4)) },
-  { name: 'sun-close-enhanced', run: () => act((a) => a.setView('mode', 'enhanced')) },
-  { name: 'earth-landed-day', run: () => act((a) => { a.setView('mode', 'realistic'); a.sim.speed = 1; a.land(a.body('Earth'), a.body('Sun'), 0.3, -0.8, 2500, 1.4, 0.05); }) },
-  { name: 'earth-landed-evening', run: () => act((a) => a.land(a.body('Earth'), a.body('Sun'), 0.2, -1.47, 1800, -1.57, 0.06)) },
-  { name: 'earth-landed-night', run: () => act((a) => a.land(a.body('Earth'), a.body('Sun'), 0.1, Math.PI, 2500, 0.3, 0.6)) },
-  { name: 'mars-landed', run: () => act((a) => a.land(a.body('Mars'), a.body('Sun'), 0.25, -0.7, 800, 1.2, 0.04)) },
-  { name: 'jupiter-orbit', run: () => act((a) => a.orbitView(a.body('Jupiter'), a.body('Sun'), 40, 8)) },
+  { name: 'sun-close-realistic', run: () => act((a) => { a.setView('mode', 'realistic'); a.orbitView(a.body('Sun'), a.body('Earth'), 20, 10, 4); }) },
+  { name: 'sun-close-enhanced', run: () => act((a) => { a.setView('mode', 'enhanced'); a.orbitView(a.body('Sun'), a.body('Earth'), 20, 10, 4); }) },
+  { name: 'earth-landed-day', run: () => act((a) => { a.setView('mode', 'realistic'); a.sim.speed = 1; a.land(a.body('Earth'), a.body('Sun'), 0.3, -0.8, 900, 1.4, 0.22); }) },
+  { name: 'earth-landed-evening', run: () => act((a) => { a.setView('mode', 'realistic'); a.land(a.body('Earth'), a.body('Sun'), 0.2, -1.47, 1800, -1.57, 0.06); }) },
+  { name: 'earth-landed-night', run: () => act((a) => { a.setView('mode', 'realistic'); a.land(a.body('Earth'), a.body('Sun'), 0.1, Math.PI, 2500, 0.3, 0.6); }) },
+  { name: 'mars-landed', run: () => act((a) => { a.setView('mode', 'realistic'); a.land(a.body('Mars'), a.body('Sun'), 0.25, -0.7, 800, 1.2, 0.04); }) },
+  { name: 'jupiter-orbit', run: () => act((a) => { a.setView('mode', 'realistic'); a.orbitView(a.body('Jupiter'), a.body('Sun'), 40, 8); }) },
   { name: 'jupiter-dive-top', run: () => act((a) => a.land(a.body('Jupiter'), a.body('Sun'), 0.15, -0.5, 60e3, 1.6, -0.1)) },
   { name: 'jupiter-dive-deep', run: () => act((a) => a.land(a.body('Jupiter'), a.body('Sun'), 0.15, -0.5, -20e3, 1.6, 0.05)) },
   { name: 'saturn-black-bg', run: () => act((a) => { a.setView('background', 'black'); a.orbitView(a.body('Saturn'), a.body('Sun'), 35, 22); }) },
   { name: 'earth-map', run: () => act((a) => { a.setView('background', 'milkyway'); a.orbitView(a.body('Earth'), a.body('Sun'), 30, 10); a.app.mapPanel.classList.remove('hidden'); }) },
-  { name: 'earth-city-lights', run: () => act((a) => { a.app.mapPanel.classList.add('hidden'); a.setView('mode', 'realistic'); a.setView('orbits', false); a.orbitView(a.body('Earth'), a.body('Sun'), 150, 25, 2.2); }) },
-  { name: 'earth-city-lights-enhanced', run: () => act((a) => a.setView('mode', 'enhanced')) },
+  { name: 'earth-city-lights', run: () => act((a) => { a.app.mapPanel.classList.add('hidden'); a.setView('mode', 'realistic'); a.setView('orbits', false); a.orbitView(a.body('Earth'), a.body('Sun'), 175, 20, 1.45); }) },
+  { name: 'earth-city-lights-enhanced', run: () => act((a) => { a.setView('mode', 'enhanced'); a.setView('orbits', false); a.orbitView(a.body('Earth'), a.body('Sun'), 150, 25, 2.2); }) },
   { name: 'ember-hearth', scenario: 'ember', run: () => act((a) => { a.setView('mode', 'realistic'); a.setView('orbits', true); a.orbitView(a.body('Hearth'), a.body('Ember'), 50, 15); }) },
   { name: 'ember-hz', run: () => act((a) => { a.setView('hz', true); a.orbitView(a.body('Ember'), a.body('Hearth'), 0, 70, 260); a.setView('mode', 'enhanced'); }) },
 ];
 
-const only = args.only;
-let loaded = false;
+// --only=a,b runs the shots whose names contain any of the terms (loading their scenarios).
+const only = args.only ? String(args.only).split(',') : null;
+let current = null;
+let declared = 'solar';
 for (const s of shots) {
-  if (s.scenario || !loaded) {
-    await scenario(s.scenario ?? 'solar');
-    loaded = true;
+  if (s.scenario) declared = s.scenario;
+  if (only && !only.some((t) => s.name.includes(t))) continue;
+  if (current !== declared) {
+    await scenario(declared);
+    current = declared;
   }
-  if (only && !s.name.includes(only)) continue;
   const t0 = Date.now();
   await s.run();
   await settle();

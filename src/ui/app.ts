@@ -1147,7 +1147,8 @@ export class App {
       return;
     }
     const sel = this.selected();
-    const defaultHost = (sel && hosts.includes(sel) && sel.star ? sel : null) ?? (sel ? this.sim.primaryOf(sel) : null) ?? hosts.find((b) => b.star) ?? hosts[0];
+    let defaultHost = (sel && hosts.includes(sel) && sel.star ? sel : null) ?? (sel ? this.sim.primaryOf(sel) : null) ?? hosts.find((b) => b.star) ?? hosts[0];
+    if (!hosts.includes(defaultHost)) defaultHost = hosts.find((b) => b.star) ?? hosts[0];
     const st = {
       name: ['Nova', 'Terra Nova', 'Hespera', 'Ilia', 'Vesper', 'Calypso', 'Oberia', 'Teyla'][Math.floor(Math.random() * 8)],
       kind: 'rocky' as 'rocky' | 'gas' | 'ice',
@@ -1338,7 +1339,11 @@ export class App {
       bg.remove();
       this.withLoading(() => {
         this.sim.addBody(b);
-        if (st.kind === 'rocky' && st.tune && st.atm === 'earth' && st.water > 1) tuneTemperate(this.sim, b);
+        const starHost = st.host.star ? st.host : this.sim.primaryOf(st.host);
+        const hzT = starHost?.star && starHost.star.L > 0 ? habitableZone(starHost.star.L, starHost.star.T) : null;
+        const dS = starHost ? b.pos.distTo(starHost.pos) : 0;
+        const inHZ = !!hzT && dS > hzT.optimisticInner * 0.9 && dS < hzT.optimisticOuter * 1.1;
+        if (st.kind === 'rocky' && st.tune && st.atm === 'earth' && st.water > 1 && inHZ) tuneTemperate(this.sim, b);
         this.focusBody(b);
         const c = b.climate instanceof TerrestrialClimate ? b.climate : null;
         this.toast(`${b.name} created${c ? `: ${fmtTemp(c.stats.meanT)} average, ${fmtPressure(c.P)}` : ''}.`, 'success', b.id);
@@ -1554,6 +1559,8 @@ export class App {
           h('kbd', null, 'O / N'), h('span', null, 'Toggle orbits / names'),
           h('kbd', null, 'Del'), h('span', null, 'Delete the selected body'),
           h('kbd', null, 'Esc'), h('span', null, 'Cancel a placement tool'),
+          h('kbd', null, '✨ Create'), h('span', null, 'Generate a star system around any star — even a brown dwarf'),
+          h('kbd', null, '✎ Design'), h('span', null, 'Build a planet by hand: mass, orbit, air, water, terrain, life'),
         ),
         section('Ideas'),
         h('ul', { class: 'muted', style: 'line-height:1.6;padding-left:18px' },

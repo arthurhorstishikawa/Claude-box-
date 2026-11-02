@@ -226,7 +226,7 @@ export class RockyView extends BodyView {
     const haze = c.hazeBase;
     const deck = (c.bulk?.pp.SO2 ?? 0) > 1 && c.P > 5e5 ? smoothstep(5e5, 3e6, c.P) : 0;
     const Hm = haze > 0 ? Hr * 2.5 : Math.max(Hr * 0.25, 800);
-    const tauM = 0.03 * Math.min(1, c.P / 1e5) + dust * 0.9 + haze * 3 + c.aerosol * 0.5 + deck * 20;
+    const tauM = 0.09 * Math.min(1, c.P / 1e5) + dust * 0.9 + haze * 3 + c.aerosol * 0.5 + deck * 20;
     const bm = tauM / Hm;
     const betaM = new THREE.Vector3(bm, bm, bm);
     let mieAlb = new THREE.Vector3(0.92, 0.92, 0.92);
@@ -291,7 +291,7 @@ export class RockyView extends BodyView {
     (u.uPlantDry.value as THREE.Vector3).set(pig[0] * 0.6 + 0.2, pig[1] * 0.6 + 0.17, pig[2] * 0.6 + 0.06);
     u.uTime.value = ctx.realTime;
     // Lit urban ground ≈ 1e-4 of sunlit-white radiance (a few cd/m²).
-    u.uLightsScale.value = (ctx.realistic ? 1.2e-4 * ctx.exposure : 0.6) * (c?.civ ? 1 : 0);
+    u.uLightsScale.value = (ctx.realistic ? 1.2e-4 * ctx.exposure : 0.9) * (c?.civ ? 1 : 0);
     setLights(u, b, ctx);
     // Atmosphere uniforms shared by surface, clouds and sky.
     const setAtmo = (uu: Record<string, THREE.IUniform>) => {
@@ -314,7 +314,8 @@ export class RockyView extends BodyView {
       this.seaBuilt = sea;
     }
     const maxElev = Math.max(9000, Math.abs(c?.terrain.max ?? 9000) + 2000);
-    const nodes = selectPatches(R, camBody, maxDepth, 2.3, maxElev);
+    const hfRef = this.hf;
+    const nodes = selectPatches(R, camBody, maxDepth, 2.3, maxElev, (d) => Math.max(hfRef.base(d), sea > -1e8 ? sea : -1e9));
     // Build missing patches within a time budget, coarse and near ones first; until a leaf
     // exists its nearest built ancestor stands in, so the surface never has holes.
     const build = (n: PatchNode): THREE.Mesh => {
