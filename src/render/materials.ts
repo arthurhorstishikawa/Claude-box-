@@ -19,6 +19,34 @@ const atmoUniforms = () => ({
   uPlanetCenter: { value: v3() },
 });
 
+/** Eclipse shadows: up to three bodies between a surface and its main star. */
+const occUniforms = () => ({
+  uOccN: { value: 0 },
+  uOcc: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
+  uOccAtm: { value: [0, 0, 0] },
+  uSunAng: { value: 0.0047 },
+});
+const OCC_GLSL = /* glsl */ `
+uniform int uOccN; uniform vec4 uOcc[3]; uniform float uOccAtm[3]; uniform float uSunAng;
+// Fraction of the main star's light reaching p (penumbra from overlapping disks); an occluder
+// with an atmosphere lets a little reddened light through (the copper colour of a lunar eclipse).
+vec3 eclipse(vec3 p, vec3 L){
+  vec3 vis = vec3(1.0);
+  for (int i = 0; i < 3; i++) {
+    if (i >= uOccN) break;
+    vec3 c = uOcc[i].xyz - p;
+    float dist = length(c);
+    if (dot(c, L) <= 0.0) continue;
+    float occ = asin(clamp(uOcc[i].w / dist, 0.0, 1.0));
+    float sep = acos(clamp(dot(c / dist, L), -1.0, 1.0));
+    float s = max(uSunAng, 1e-5);
+    float cover = (1.0 - smoothstep(abs(occ - s), occ + s + 1e-6, sep)) * min(1.0, (occ * occ) / (s * s));
+    vis *= vec3(1.0 - cover) + cover * uOccAtm[i] * vec3(0.06, 0.018, 0.007);
+  }
+  return vis;
+}
+`;
+
 /** Shared GLSL used by planet surfaces: lighting helpers and blackbody glow. */
 const SHADE_GLSL = /* glsl */ `
 vec3 glowColor(float T){
@@ -78,6 +106,7 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
       uHasAtm: { value: 0 },
       ...sunUniforms(),
       ...atmoUniforms(),
+      ...occUniforms(),
     },
     vertexShader: /* glsl */ `
       ${LOGDEPTH_PARS_V}
@@ -99,6 +128,7 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
       ${COLORMAP_GLSL}
       uniform vec3 uPlanetCenter;
       ${SHADE_GLSL}
+      ${OCC_GLSL}
       uniform sampler2D uElevTex, uClimA, uClimB, uLayerTex;
       uniform int uLayer, uPalette;
       uniform vec2 uLayerRange;
@@ -149,6 +179,11 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
           vec3 ground = mix(rock, uSand * (0.85 + 0.3 * n1 + micro * 0.6), arid * 0.85);
           vec3 plant = mix(uPlantDry, uPlant, smoothstep(0.6, 3.0, pmm)) * (1.0 + micro * 0.8);
           float vegCov = clamp(veg * (0.75 + 0.5 * n1) + micro * 0.4 * veg, 0.0, 1.0);
+          // Seasons (Ts here is the monthly mean): deciduous leaves turn in autumn and fall in
+          // winter, leaving evergreens; tropical forests stay green all year.
+          vec3 autumn = vec3(0.3, 0.13, 0.03) * (0.7 + 0.6 * n2);
+          plant = mix(mix(autumn, plant, smoothstep(276.0, 286.0, Ts)), plant, 0.35 + 0.25 * n1);
+          vegCov *= mix(0.45, 1.0, smoothstep(268.0, 279.0, Ts));
           albedo = mix(ground, plant, vegCov);
           // Snow: thicker on flatter ground, patchy at the edges.
           float slope = 1.0 - dot(N, G);
@@ -163,7 +198,7 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
         if (uLayer > 0) {
           float val = sampleEq(uLayerTex, d).r;
           float x = (val - uLayerRange.x) / (uLayerRange.y - uLayerRange.x);
-          vec3 c = uPalette == 1 ? blueRed(x) : uPalette == 2 ? rain(x) : turbo(x);
+          vec3 c = uPalette == 1 ? blueRed(x) : uPalette == 2 ? rain(x) : uPalette == 3 ? biomeColor(val) : turbo(x);
           albedo = c * 0.85;
           spec = 0.0;
         }
@@ -181,6 +216,7 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
           float horizon = smoothstep(-0.03, 0.05, cosG);
           float shadow = 1.0 - 0.45 * cloud * float(uHasAtm > 0.5);
           vec3 rad = uSunRadiance[s];
+          if (s == 0) rad *= eclipse(vWorld, L);
           if (uHasAtm > 0.5) {
             // Sunlight reddened by the atmosphere on its way down.
             vec2 od = lightDepth(vWorld - uPlanetCenter, L);
@@ -250,6 +286,7 @@ export function makeCloudShellMaterial(): THREE.ShaderMaterial {
       uFlowScale: { value: 1 },
       ...sunUniforms(),
       ...atmoUniforms(),
+      ...occUniforms(),
     },
     vertexShader: /* glsl */ `
       ${LOGDEPTH_PARS_V}
@@ -267,6 +304,7 @@ export function makeCloudShellMaterial(): THREE.ShaderMaterial {
       ${NOISE_GLSL}
       ${SCATTER_GLSL}
       ${COVER_GLSL}
+      ${OCC_GLSL}
       uniform vec3 uPlanetCenter;
       uniform sampler2D uClimB, uWind;
       uniform float uTime, uOpacity, uFlowScale;
@@ -329,6 +367,7 @@ export function makeCloudShellMaterial(): THREE.ShaderMaterial {
           float lit = smoothstep(-0.12, 0.25, ndl);
           vec2 od = lightDepth(vWorld - uPlanetCenter, L);
           vec3 rad = uSunRadiance[s] * exp(-(uBetaR * od.x + uBetaM * od.y));
+          if (s == 0) rad *= eclipse(vWorld, L);
           float silver = pow(max(dot(-V, L), 0.0), 8.0) * 0.6;
           col += uCloudColor * rad * lit * (0.75 + 0.25 * dens + silver);
         }
@@ -554,6 +593,94 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
   });
 }
 
+/**
+ * Aurorae: emission from a layer ~90–320 km up, in curtains along ovals around the magnetic
+ * poles on the night side. Green (557.7 nm oxygen) low down, red high up; hydrogen-rich giants
+ * glow pink-violet. Intensity follows stellar activity and flares.
+ */
+export function makeAuroraMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uPlanetCenter: { value: v3() },
+      uR: { value: 6.371e6 },
+      uInner: { value: 6.461e6 },
+      uOuter: { value: 6.691e6 },
+      uBodyRot: { value: new THREE.Matrix3() },
+      uMagAxis: { value: v3(0, 0, 1) },
+      uSunDir0: { value: v3(1, 0, 0) },
+      uIntensity: { value: 1 },
+      uOvalLat: { value: 1.17 },
+      uTime: { value: 0 },
+      uColLow: { value: v3(0.25, 1.0, 0.45) },
+      uColHigh: { value: v3(1.0, 0.25, 0.3) },
+    },
+    vertexShader: /* glsl */ `
+      ${LOGDEPTH_PARS_V}
+      varying vec3 vWorld;
+      void main(){
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        vWorld = w.xyz;
+        gl_Position = projectionMatrix * viewMatrix * w;
+        ${LOGDEPTH_V}
+      }`,
+    fragmentShader: /* glsl */ `
+      ${LOGDEPTH_PARS_F}
+      ${NOISE_GLSL}
+      uniform vec3 uPlanetCenter, uMagAxis, uSunDir0, uColLow, uColHigh;
+      uniform float uR, uInner, uOuter, uIntensity, uOvalLat, uTime;
+      uniform mat3 uBodyRot;
+      varying vec3 vWorld;
+      vec2 rs(vec3 ro, vec3 rd, float r){
+        float b = dot(ro, rd); float c = dot(ro, ro) - r * r; float h = b * b - c;
+        if (h < 0.0) return vec2(1e30, -1e30);
+        h = sqrt(h); return vec2(-b - h, -b + h);
+      }
+      void main(){
+        vec3 rd = normalize(vWorld);
+        vec3 ro = -uPlanetCenter;
+        float rc = length(ro);
+        vec2 to = rs(ro, rd, uOuter);
+        if (to.y < 0.0 || to.x > to.y) discard;
+        float t0 = max(to.x, 0.0), t1 = to.y;
+        vec2 ti = rs(ro, rd, uInner);
+        if (rc < uInner) { if (ti.y < 0.0) discard; t0 = max(t0, ti.y); }
+        else if (ti.x > 0.0) t1 = min(t1, ti.x);
+        vec2 tg = rs(ro, rd, uR);
+        if (tg.x > 0.0) t1 = min(t1, tg.x);
+        if (t1 <= t0) discard;
+        const int STEPS = 24;
+        float ds = (t1 - t0) / float(STEPS);
+        float thick = uOuter - uInner;
+        vec3 acc = vec3(0.0);
+        for (int i = 0; i < STEPS; i++) {
+          vec3 p = ro + rd * (t0 + (float(i) + 0.5) * ds);
+          float r = length(p);
+          float h = clamp((r - uInner) / thick, 0.0, 1.0);
+          vec3 db = uBodyRot * (p / r);
+          float mlat = asin(clamp(dot(db, uMagAxis), -1.0, 1.0));
+          vec3 e1 = normalize(cross(uMagAxis, vec3(0.31, 0.42, 0.85)));
+          vec3 e2 = cross(uMagAxis, e1);
+          float mlon = atan(dot(db, e2), dot(db, e1));
+          // Oval band, wiggling curtains with fine vertical rays.
+          float wig = snoise(vec3(mlon * 3.0, uTime * 0.05, 1.7)) * 0.04;
+          float band = exp(-pow((abs(mlat) - uOvalLat - wig) / 0.035, 2.0));
+          float curtain = pow(snoise(vec3(mlon * 9.0, uTime * 0.15, 3.1)) * 0.5 + 0.5, 2.0);
+          float rays = 0.6 + 0.4 * snoise(vec3(mlon * 140.0, uTime * 0.6, 0.0));
+          float night = smoothstep(0.15, -0.2, dot(p / r, uSunDir0));
+          float prof = exp(-h * 3.0) * (1.0 - smoothstep(0.9, 1.0, h));
+          vec3 col = mix(uColLow, uColHigh, smoothstep(0.25, 0.7, h));
+          acc += col * band * curtain * rays * night * prof * ds / thick;
+        }
+        if (max(acc.r, max(acc.g, acc.b)) < 1e-5) discard;
+        gl_FragColor = vec4(acc * uIntensity, 1.0);
+        ${LOGDEPTH_F}
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+}
+
 /** Banded gas-giant cloud tops (seen from outside). */
 export function makeGiantMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
@@ -575,6 +702,7 @@ export function makeGiantMaterial(): THREE.ShaderMaterial {
       uLayer: { value: 0 },
       ...sunUniforms(),
       ...atmoUniforms(),
+      ...occUniforms(),
     },
     vertexShader: /* glsl */ `
       ${LOGDEPTH_PARS_V}
@@ -594,6 +722,7 @@ export function makeGiantMaterial(): THREE.ShaderMaterial {
       ${COLORMAP_GLSL}
       uniform vec3 uPlanetCenter;
       ${SHADE_GLSL}
+      ${OCC_GLSL}
       uniform sampler2D uBands, uThermal, uRingTex;
       uniform float uTime, uTurb, uGlow, uRingIn, uRingOut, uExposure;
       uniform int uLayer;
@@ -662,7 +791,8 @@ export function makeGiantMaterial(): THREE.ShaderMaterial {
           }
           // Limb darkening from the hazy upper atmosphere.
           float mu = max(dot(N, -V), 0.0);
-          col += albedo * uSunRadiance[s] * ndl * shadow * (0.55 + 0.45 * pow(mu, 0.35));
+          vec3 ecl = s == 0 ? eclipse(vWorld, L) : vec3(1.0);
+          col += albedo * uSunRadiance[s] * ecl * ndl * shadow * (0.55 + 0.45 * pow(mu, 0.35));
         }
         col += albedo * uAmbient;
         // Thermal glow of hot giants and brown dwarfs.

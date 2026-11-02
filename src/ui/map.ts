@@ -23,6 +23,21 @@ export function blueRed(x: number): RGB {
   const f = (p: RGB, q: RGB, t: number): RGB => [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t];
   return x < 0.5 ? f(a, m, x * 2) : f(m, b, x * 2 - 1);
 }
+const BIOME_RGB: RGB[] = [
+  [0.04, 0.12, 0.35],
+  [0.92, 0.95, 1.0],
+  [0.55, 0.55, 0.45],
+  [0.1, 0.28, 0.18],
+  [0.15, 0.45, 0.13],
+  [0.6, 0.68, 0.25],
+  [0.88, 0.76, 0.5],
+  [0.74, 0.62, 0.25],
+  [0.02, 0.3, 0.07],
+  [0.45, 0.4, 0.37],
+];
+export function biomeRGB(v: number): RGB {
+  return BIOME_RGB[clamp(Math.round(v), 0, 9)];
+}
 export function rain(x: number): RGB {
   x = clamp(x, 0, 1);
   const f = (p: RGB, q: RGB, t: number): RGB => [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t];
@@ -117,7 +132,7 @@ export class ClimateMap {
       if (field) {
         const v = layer === 'precip' ? field[k] * DAY : field[k];
         const x = (v - L.range[0]) / (L.range[1] - L.range[0]);
-        rgb = L.palette === 'blueRed' ? blueRed(x) : L.palette === 'rain' ? rain(x) : turbo(x);
+        rgb = L.palette === 'biome' ? biomeRGB(v) : L.palette === 'blueRed' ? blueRed(x) : L.palette === 'rain' ? rain(x) : turbo(x);
       } else {
         const fo = c.ocean[k];
         const ice = smoothstep(0.02, 0.4, c.seaIce[k]) * fo + smoothstep(5, 100, c.snow[k]) * (1 - fo);

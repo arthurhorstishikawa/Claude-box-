@@ -64,6 +64,19 @@ interface Ctx {
   lat: Float32Array;
   noise: Noise3;
   rng: Rng;
+  /** Plate drift elapsed (Myr). */
+  drift: number;
+}
+
+/** Rotate v about the unit axis a by angle (Rodrigues). */
+function rotateVec(v: [number, number, number], a: [number, number, number], ang: number): [number, number, number] {
+  const c = Math.cos(ang),
+    s = Math.sin(ang);
+  const d = v[0] * a[0] + v[1] * a[1] + v[2] * a[2];
+  const cx = a[1] * v[2] - a[2] * v[1],
+    cy = a[2] * v[0] - a[0] * v[2],
+    cz = a[0] * v[1] - a[1] * v[0];
+  return [v[0] * c + cx * s + a[0] * d * (1 - c), v[1] * c + cy * s + a[1] * d * (1 - c), v[2] * c + cz * s + a[2] * d * (1 - c)];
 }
 
 const randomUnit = (rng: Rng): [number, number, number] => {
@@ -213,6 +226,17 @@ function plates(ctx: Ctx, contFrac: number) {
     acc += area[k];
   }
   for (const p of ps) p.base = p.cont ? rng.range(380, 800) : rng.range(-4700, -3900);
+  // Continental drift: each plate turns about its Euler pole (speed 1 ≈ 8 cm/yr).
+  const euler = ps.map((p) => {
+    const ax: [number, number, number] = [p.c[1] * p.v[2] - p.c[2] * p.v[1], p.c[2] * p.v[0] - p.c[0] * p.v[2], p.c[0] * p.v[1] - p.c[1] * p.v[0]];
+    const l = Math.hypot(...ax) || 1;
+    return { axis: [ax[0] / l, ax[1] / l, ax[2] / l] as [number, number, number], ang: Math.hypot(...p.v) * ctx.drift * 0.012 };
+  });
+  if (ctx.drift > 0)
+    ps.forEach((p, i) => {
+      p.c = rotateVec(p.c, euler[i].axis, euler[i].ang);
+      p.v = rotateVec(p.v, euler[i].axis, euler[i].ang);
+    });
 
   const hotspots: { c: [number, number, number]; R: number; h: number }[] = [];
   for (let k = 0; k < rng.int(4, 9); k++) hotspots.push({ c: randomUnit(rng), R: rng.range(0.012, 0.03), h: rng.range(3500, 6000) });
@@ -276,6 +300,8 @@ function plates(ctx: Ctx, contFrac: number) {
         else e -= conv * 3500 * g(0.006, 0.012);
       } else e += (0.35 - conv) * 1800 * g(0, 0.035);
     }
+    // Detail is carried by the plate: evaluate it in the plate's own (pre-drift) frame.
+    if (ctx.drift > 0 && euler[i1].ang > 0) [x, y, z] = rotateVec([x, y, z], euler[i1].axis, -euler[i1].ang);
     // Detail: hills, ranges, abyssal relief and fractal coasts.
     const cont = e > -1500 ? 1 : 0;
     const hills = cont ? noise.fbm(x * 3 + 5, y * 3, z * 3, 4) * 420 + 120 : noise.fbm(x * 3 + 5, y * 3, z * 3, 3) * 300;
@@ -525,8 +551,8 @@ function rotate(v: [number, number, number], k: [number, number, number], ang: n
 const cache = new Map<string, TerrainMap>();
 
 /** Generate (or fetch from cache) a terrain map. */
-export function generateTerrain(style: TerrainStyle, seed: number, w = 512, h = 256): TerrainMap {
-  const key = `${style}:${seed}:${w}x${h}`;
+export function generateTerrain(style: TerrainStyle, seed: number, w = 512, h = 256, drift = 0): TerrainMap {
+  const key = `${style}:${seed}:${w}x${h}:${drift.toFixed(1)}`;
   const hit = cache.get(key);
   if (hit) return hit;
   const n = w * h;
@@ -546,7 +572,7 @@ export function generateTerrain(style: TerrainStyle, seed: number, w = 512, h = 
       lat[k] = la;
     }
   }
-  const ctx: Ctx = { t, px, py, pz, lat, noise: new Noise3(seed), rng: new Rng(seed * 7919 + 13) };
+  const ctx: Ctx = { t, px, py, pz, lat, noise: new Noise3(seed), rng: new Rng(seed * 7919 + 13), drift };
   switch (style) {
     case 'earthlike':
       plates(ctx, 0.4);
@@ -699,7 +725,7 @@ export function applyCrater(t: TerrainMap, c: CraterRecord, planetRadius: number
   const e2 = cross(centre, e1);
   const noise = new Noise3(Math.floor((c.lat + 7) * 1e5 + c.lon * 1e3) >>> 0);
   const nRays = 9 + Math.floor(noise.noise(c.lat, c.lon, 1) * 4 + 4);
-  const ctx: Ctx = { t, px: v.px, py: v.py, pz: v.pz, lat: v.lat, noise, rng: new Rng(1) };
+  const ctx: Ctx = { t, px: v.px, py: v.py, pz: v.pz, lat: v.lat, noise, rng: new Rng(1), drift: 0 };
   const profile = craterProfile(c.depth, rim, peak);
   // Big basins flatten the pre-existing relief inside the cavity.
   stamp(

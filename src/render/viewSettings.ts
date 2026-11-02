@@ -43,7 +43,7 @@ export function setView<K extends keyof ViewSettings>(k: K, v: ViewSettings[K]):
   viewEvents.emit('changed', k);
 }
 
-export const LAYERS: { id: LayerId; label: string; unit: string; range: [number, number]; palette: 'turbo' | 'blueRed' | 'rain' }[] = [
+export const LAYERS: { id: LayerId; label: string; unit: string; range: [number, number]; palette: 'turbo' | 'blueRed' | 'rain' | 'biome' }[] = [
   { id: 'true', label: 'True colour', unit: '', range: [0, 1], palette: 'turbo' },
   { id: 'Ts', label: 'Surface temperature', unit: 'K', range: [200, 330], palette: 'turbo' },
   { id: 'tAnnual', label: 'Annual mean temperature', unit: 'K', range: [200, 320], palette: 'turbo' },
@@ -55,6 +55,8 @@ export const LAYERS: { id: LayerId; label: string; unit: string; range: [number,
   { id: 'snow', label: 'Snow & land ice', unit: 'kg/m²', range: [0, 2000], palette: 'turbo' },
   { id: 'seaIce', label: 'Sea ice thickness', unit: 'm', range: [0, 5], palette: 'turbo' },
   { id: 'veg', label: 'Vegetation', unit: '%', range: [0, 1], palette: 'rain' },
+  { id: 'biome', label: 'Biomes', unit: '', range: [0, 9], palette: 'biome' },
+  { id: 'current', label: 'Ocean currents', unit: 'm/s', range: [0, 0.4], palette: 'turbo' },
   { id: 'albedo', label: 'Albedo', unit: '', range: [0, 0.8], palette: 'turbo' },
   { id: 'insol', label: 'Insolation', unit: 'W/m²', range: [0, 600], palette: 'turbo' },
   { id: 'habitable', label: 'Habitability', unit: '', range: [0, 1], palette: 'rain' },

@@ -73,7 +73,7 @@ export class ClimateTextures {
     const lights = c.civ?.lights;
     for (let k = 0; k < n; k++) {
       const fl = 1 - c.ocean[k];
-      A[4 * k] = toHalf(c.Ts[k]);
+      A[4 * k] = toHalf(c.tMonth[k]);
       A[4 * k + 1] = toHalf(Math.min(6e4, c.snow[k] * (fl > 0.02 ? 1 : 0)));
       A[4 * k + 2] = toHalf(Math.min(6e4, c.seaIce[k]));
       A[4 * k + 3] = toHalf(c.veg[k]);
@@ -96,6 +96,9 @@ export class ClimateTextures {
       } else src = c.field(layer as any);
       const scale = layer === 'precip' ? 86400 : layer === 'pAnom' ? 1 : 1;
       for (let k = 0; k < n; k++) L[k] = toHalf(src ? clamp(src[k] * scale, -6e4, 6e4) : 0);
+      // Categories (biomes) must not be blended between cells.
+      const f = layer === 'biome' ? THREE.NearestFilter : THREE.LinearFilter;
+      this.layer.magFilter = this.layer.minFilter = f;
       this.layer.needsUpdate = true;
     }
     this.climA.needsUpdate = true;

@@ -10,7 +10,7 @@ import { classifyBody } from '../physics/classify';
 import { brownDwarf, msLifetime, PHASE_LABEL, phaseStartAges, spectralClass, whiteDwarf } from '../stars/stellar';
 import { GASES, GAS_ORDER, type GasId } from '../climate/atmosphere';
 import { GasGiantClimate } from '../climate/gasGiant';
-import { TerrestrialClimate } from '../climate/terrestrial';
+import { BIOMES, LIFE_STAGES, TerrestrialClimate } from '../climate/terrestrial';
 import { TERRAIN_STYLES, type TerrainStyle } from '../climate/terrain';
 import { pigmentName, plantPigment } from '../climate/life';
 import { ERA_LABEL } from '../climate/civilization';
@@ -61,6 +61,8 @@ const TEMPLATES: Template[] = [
   { id: 'venus', label: 'Venus-like', group: 'Planets', color: '#e8cf8f', make: () => makeRocky({ name: 'Hothouse', mass: 0.82 * M_EARTH, rotationHours: -2000, atmosphere: { CO2: 8.8e6, N2: 3e5, SO2: 1400 }, waterGEL: 0.02, terrain: 'venuslike', seed: seed(), initialTemp: 730, color: '#e8cf8f' }) },
   { id: 'ice', label: 'Ice world', group: 'Planets', color: '#cfe3f0', make: () => makeRocky({ name: 'Hoth', mass: 0.6 * M_EARTH, rotationHours: 18, atmosphere: { N2: 50000, CO2: 50 }, waterGEL: 1500, terrain: 'oceanic', seed: seed(), initialTemp: 220, iceCapLat: 0, color: '#cfe3f0' }) },
   { id: 'lava', label: 'Lava world', group: 'Planets', color: '#ff6a2a', make: () => makeRocky({ name: 'Vulcan', mass: 2 * M_EARTH, rotationHours: 30, atmosphere: { CO2: 1e4 }, terrain: 'lavaworld', seed: seed(), initialTemp: 1800, color: '#ff6a2a' }) },
+  { id: 'deepocean', label: 'Deep-ocean world', group: 'Planets', color: '#1d4f8f', make: () => makeRocky({ name: 'Abyss', mass: 2 * M_EARTH, composition: { iron: 0.15, rock: 0.35, ice: 0.5, gas: 0 }, rotationHours: 22, atmosphere: { N2: 1.5e5, CO2: 3000 }, waterGEL: 150000, terrain: 'oceanic', seed: seed(), initialTemp: 285, color: '#1d4f8f' }) },
+  { id: 'carbon', label: 'Carbon world', group: 'Planets', color: '#3a3430', make: () => makeRocky({ name: 'Graphite', mass: 1.4 * M_EARTH, rotationHours: 30, atmosphere: { CO2: 4e4, CH4: 2000, N2: 3e4 }, waterGEL: 0, terrain: 'venuslike', seed: seed(), haze: 0.6, initialTemp: 330, color: '#3a3430' }) },
   { id: 'gas', label: 'Gas giant', group: 'Planets', color: '#d9b98c', make: () => makeGiant({ name: 'Gas giant', mass: M_JUP, rotationHours: 10, seed: seed() }) },
   { id: 'icegiant', label: 'Ice giant', group: 'Planets', color: '#8fc3e0', make: () => makeGiant({ name: 'Ice giant', mass: 17 * M_EARTH, rotationHours: 16, seed: seed(), ice: true }) },
   { id: 'ringed', label: 'Ringed giant', group: 'Planets', color: '#e2c48f', make: () => makeGiant({ name: 'Ringed giant', mass: 0.3 * M_JUP, rotationHours: 10.5, seed: seed(), rings: { inner: 7.4e7, outer: 1.35e8, opacity: 0.85 } }) },
@@ -80,7 +82,7 @@ export class App {
   selectedId: number | null = null;
   private tab: Tab = 'overview';
   private armed: Template | null = null;
-  private impactor: { size: number } | null = null;
+  private impactor: { size: number; icy: boolean } | null = null;
   private inspector!: HTMLElement;
   private inspBody!: HTMLElement;
   private inspHead!: HTMLElement;
@@ -167,14 +169,16 @@ export class App {
     }
     tb.appendChild(h('h3', null, 'Impacts'));
     const imp = h('div', { class: 'cards' });
-    for (const [label, size] of [
-      ['Asteroid 1 km', 500],
-      ['Chicxulub 10 km', 5000],
-      ['Giant 100 km', 50000],
-      ['Mars-sized', 3.39e6],
-    ] as [string, number][]) {
-      const card = h('div', { class: 'card', title: 'Arm, then click a planet to hit it' }, h('span', { class: 'dot', style: 'background:#ff8a50' }), label);
-      card.addEventListener('click', () => this.armImpactor(size, card));
+    for (const [label, size, icy] of [
+      ['Asteroid 1 km', 500, false],
+      ['Chicxulub 10 km', 5000, false],
+      ['Giant 100 km', 50000, false],
+      ['Mars-sized', 3.39e6, false],
+      ['Ice comet 10 km', 5000, true],
+      ['Ice comet 100 km', 50000, true],
+    ] as [string, number, boolean][]) {
+      const card = h('div', { class: 'card', title: icy ? 'Terraforming: an icy comet delivers water and CO₂ (arm, then click a planet)' : 'Arm, then click a planet to hit it' }, h('span', { class: 'dot', style: `background:${icy ? '#9fd8ff' : '#ff8a50'}` }), label);
+      card.addEventListener('click', () => this.armImpactor(size, card, icy));
       imp.appendChild(card);
     }
     tb.appendChild(imp);
@@ -356,7 +360,7 @@ export class App {
   private click(x: number, y: number, keepArmed = false): void {
     if (this.impactor) {
       const target = this.r.pick(x, y);
-      if (target && !target.isStarLike) this.launchImpactor(target, this.impactor.size);
+      if (target && !target.isStarLike) this.launchImpactor(target, this.impactor.size, this.impactor.icy);
       return;
     }
     if (this.armed) {
@@ -393,10 +397,10 @@ export class App {
     this.hintEl.classList.remove('hidden');
   }
 
-  private armImpactor(size: number, card: HTMLElement): void {
-    if (this.impactor?.size === size) return this.disarm();
+  private armImpactor(size: number, card: HTMLElement, icy = false): void {
+    if (this.impactor?.size === size && this.impactor.icy === icy) return this.disarm();
     this.disarm();
-    this.impactor = { size };
+    this.impactor = { size, icy };
     card.classList.add('active');
     this.r.renderer.domElement.classList.add('placing');
     this.hintEl.textContent = 'Click a planet or moon to send the impactor at 20 km/s. Watch the crater, the fireball and the impact winter.';
@@ -454,9 +458,8 @@ export class App {
     if (!keepArmed) this.disarm();
   }
 
-  private launchImpactor(target: Body, radius: number): void {
-    const icy = false;
-    const mass = (4 / 3) * Math.PI * radius ** 3 * 2700;
+  private launchImpactor(target: Body, radius: number, icy = false): void {
+    const mass = (4 / 3) * Math.PI * radius ** 3 * (icy ? 900 : 2700);
     const imp = radius > 1e5 ? makeRocky({ name: 'Impactor', mass, radius, rotationHours: 10, terrain: 'asteroid', seed: seed(), initialTemp: 200 }) : makeSmallBody(`Impactor ${(radius * 2) / 1e3} km`, mass, radius, icy, seed());
     // Approach from a random direction on the camera-facing hemisphere.
     const toCam = V3.sub(this.r.cam.pos, target.pos).normalize();
@@ -675,6 +678,7 @@ export class App {
         rows.push(['Eccentricity', o.e.toFixed(4)]);
         rows.push(['Period', fmtDuration(orbitPeriod(o))]);
         rows.push(['Obliquity', `${((Math.acos(clamp(b.spinAxis.dot(o.W), -1, 1)) * 180) / Math.PI).toFixed(1)}°`]);
+        if (Number.isFinite(b.precessionPeriod)) rows.push(['Axial precession', fmtDuration(b.precessionPeriod)]);
       } else rows.push(['Trajectory', 'unbound (escaping)']);
       rows.push(['Distance', fmtDistance(b.pos.distTo(p.pos))]);
     }
@@ -686,6 +690,7 @@ export class App {
       if (b.tidalHeat > 1e-4) rows.push(['Tidal heating', `${sig(b.tidalHeat, 3)} W/m²`]);
       if (b.insolationFactor !== 1) rows.push(['Sunshade/mirror', `${(b.insolationFactor * 100).toFixed(0)}%`]);
     }
+    if (b.climate instanceof TerrestrialClimate && b.climate.driftMyr > 1) rows.push(['Continental drift', `${b.climate.driftMyr.toFixed(0)} Myr of plate motion`]);
     el.appendChild(kv(rows));
     if (b.description) el.appendChild(h('p', { class: 'muted', style: 'margin:10px 0 0;line-height:1.4' }, b.description));
     const c = b.climate;
@@ -883,19 +888,56 @@ export class App {
         'div',
         { class: 'row wrap' },
         h('button', { class: 'danger', onclick: () => { c.stripAtmosphere(1); refreshInfo(); } }, 'Strip atmosphere'),
-        h('button', { onclick: () => { c.aerosol += 2; } }, 'Volcanic winter'),
+        h('button', { title: 'Pinatubo-size eruption (VEI 6)', onclick: () => this.erupt(b, c, 6) }, '🌋 Eruption'),
+        h('button', { title: 'Tambora-size eruption (VEI 7)', onclick: () => this.erupt(b, c, 7) }, '🌋 Colossal'),
+        h('button', { class: 'danger', title: 'Supervolcano (VEI 8): years of volcanic winter', onclick: () => this.erupt(b, c, 8) }, '🌋 Supervolcano'),
         h('button', { onclick: () => { c.setPartialPressures({ N2: 78084, O2: 20946, Ar: 934, CO2: 42 }); refreshInfo(); } }, 'Earth-like air'),
       ),
     );
+  }
+
+  /** Trigger an eruption at a high land point of a world. */
+  private erupt(b: Body, c: TerrestrialClimate, vei: number): void {
+    let best = -Infinity,
+      bk = 0;
+    for (let t = 0; t < 40; t++) {
+      const k = Math.floor(Math.random() * c.grid.N);
+      const s = c.elev[k] + (c.ocean[k] < 0.5 ? 3000 : 0) + Math.random() * 2000;
+      if (s > best) {
+        best = s;
+        bk = k;
+      }
+    }
+    c.eruption(c.grid.lat[Math.floor(bk / c.grid.nLon)], c.grid.lon[bk % c.grid.nLon], vei);
+    this.sim.events.emit('eruption', { body: b, ...c.eruptions[c.eruptions.length - 1] });
+    c.eruptions.length = 0;
   }
 
   private lifeTab(el: HTMLElement, b: Body): void {
     const c = b.climate as TerrestrialClimate;
     const pig = plantPigment(c.hostTeff);
     const css = `rgb(${pig.map((x) => Math.round(Math.min(1, x * 3) * 255)).join(',')})`;
+    // Biome shares of the land.
+    const shares = new Array(BIOMES.length).fill(0);
+    let landW = 0;
+    for (let k = 0; k < c.grid.N; k++) {
+      const w = c.grid.cellArea[Math.floor(k / c.grid.nLon)];
+      const bi = c.biomeAt(k);
+      if (bi === 0) continue;
+      shares[bi] += w;
+      landW += w;
+    }
+    const top = shares
+      .map((s, i) => [i, s] as [number, number])
+      .filter(([, s]) => s > 0.02 * landW)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([i, s]) => `${BIOMES[i]} ${Math.round((100 * s) / Math.max(landW, 1e-9))}%`)
+      .join(', ');
     el.appendChild(
       kv([
-        ['Biosphere', c.biosphere ? 'alive' : 'none'],
+        ['Life', `${LIFE_STAGES[c.lifeStage]}${c.lifeStage > 0 && c.lifeStage < 4 ? ' (evolving)' : ''}`],
+        ['Biomes', top || '—'],
         ['Vegetation cover (land)', fmtPct(c.stats.vegetation / Math.max(1 - c.stats.oceanFrac, 1e-3))],
         ['Plant colour', h('span', { class: 'v' }, h('span', { class: 'swatch', style: `background:${css}` }), ` ${pigmentName(c.hostTeff)}`)],
         ['Biomass carbon', `${sig(c.vegetationCarbon() / 1e12, 3)} Gt C`],
@@ -917,6 +959,8 @@ export class App {
         ['Cumulative CO₂', `${sig(civ.cumulativeCO2 / 1e12, 4)} Gt`],
         ['Atmospheric CO₂', `${sig(ppm, 4)} ppm`],
         ['Technology', civ.tech.toFixed(2)],
+        ['Carbon tax', civ.carbonTax ? 'yes' : 'no'],
+        ['Geoengineering', civ.geoengineering > 0 ? `aerosol τ ${civ.geoengineering.toFixed(3)}` : 'none'],
       ]),
     );
   }
@@ -928,9 +972,10 @@ export class App {
       h(
         'div',
         { class: 'row wrap' },
-        c.biosphere
-          ? h('button', { class: 'danger', onclick: () => { c.biosphere = false; c.veg.fill(0); this.lastSelected = -1; } }, 'Sterilize')
-          : h('button', { class: 'primary', onclick: () => { c.biosphere = true; this.lastSelected = -1; this.toast(`Life seeded on ${b.name}. Plants spread where it is warm and wet.`, 'success', b.id); } }, 'Seed life'),
+        c.lifeStage > 0
+          ? h('button', { class: 'danger', onclick: () => { c.lifeStage = 0; c.biosphere = false; c.veg.fill(0); this.lastSelected = -1; } }, 'Sterilize')
+          : h('button', { title: 'Start evolution from scratch: microbes, then (over ~1–2 Gyr) oxygen, plants and animals', onclick: () => { c.lifeStage = 1; this.lastSelected = -1; this.toast(`Microbes seeded on ${b.name}. Speed up time to watch evolution.`, 'success', b.id); } }, 'Seed microbes'),
+        c.lifeStage < 4 ? h('button', { class: 'primary', onclick: () => { c.lifeStage = 4; c.biosphere = true; this.lastSelected = -1; this.toast(`A full biosphere seeded on ${b.name}. Plants spread where it is warm and wet.`, 'success', b.id); } }, 'Seed plants & animals') : null,
         !c.civ
           ? h('button', { onclick: () => { c.seedCivilization('preindustrial'); this.lastSelected = -1; } }, 'Seed civilization')
           : h('button', { onclick: () => { c.civ!.tech = Math.max(c.civ!.tech, 1.85); this.toast('Clean-energy push: emissions will fall as the transition completes.', 'success', b.id); } }, 'Clean-energy push'),
@@ -938,6 +983,29 @@ export class App {
         h('button', { title: 'Direct air capture: remove 100 Gt of CO₂', onclick: () => { c.gas.CO2 = Math.max(0, c.gas.CO2 - 1e14); } }, 'Capture 100 Gt CO₂'),
       ),
     );
+    const civ = c.civ;
+    if (civ && civ.era !== 'collapsed') {
+      body.appendChild(section('Policies'));
+      const tax = h('input', { type: 'checkbox' }) as HTMLInputElement;
+      tax.checked = civ.carbonTax;
+      tax.addEventListener('change', () => {
+        civ.carbonTax = tax.checked;
+        this.toast(tax.checked ? 'Carbon tax: fossil emissions drop and clean energy arrives sooner.' : 'Carbon tax repealed.', 'info', b.id);
+      });
+      body.appendChild(h('label', { class: 'row', style: 'cursor:pointer;margin:4px 0' }, tax, 'Carbon tax'));
+      body.appendChild(
+        slider('Geoengineering (stratospheric sulfate)', {
+          min: 0,
+          max: 0.15,
+          step: 0.005,
+          value: civ.geoengineering,
+          fmt: (v) => (v <= 0 ? 'off' : `τ ${v.toFixed(3)}`),
+          onInput: (v) => (civ.geoengineering = v),
+          title: 'Reflects sunlight to cool the planet while it lasts; stopping it suddenly brings back the warming at once',
+        }),
+      );
+      body.appendChild(h('div', { class: 'row wrap' }, h('button', { class: 'danger', onclick: () => { civ.nuclearWar(); this.lastSelected = -1; } }, '☢ Nuclear war')));
+    }
   }
 
   private editTab(body: HTMLElement, b: Body): void {

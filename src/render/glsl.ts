@@ -197,6 +197,19 @@ vec3 blueRed(float x){
   x = clamp(x, 0.0, 1.0);
   return x < 0.5 ? mix(vec3(0.05,0.2,0.65), vec3(0.95,0.95,0.95), x * 2.0) : mix(vec3(0.95,0.95,0.95), vec3(0.75,0.08,0.06), x * 2.0 - 1.0);
 }
+vec3 biomeColor(float v){
+  int b = int(floor(v + 0.5));
+  if (b == 0) return vec3(0.04, 0.12, 0.35);
+  if (b == 1) return vec3(0.92, 0.95, 1.0);
+  if (b == 2) return vec3(0.55, 0.55, 0.45);
+  if (b == 3) return vec3(0.1, 0.28, 0.18);
+  if (b == 4) return vec3(0.15, 0.45, 0.13);
+  if (b == 5) return vec3(0.6, 0.68, 0.25);
+  if (b == 6) return vec3(0.88, 0.76, 0.5);
+  if (b == 7) return vec3(0.74, 0.62, 0.25);
+  if (b == 8) return vec3(0.02, 0.3, 0.07);
+  return vec3(0.45, 0.4, 0.37);
+}
 vec3 rain(float x){
   x = clamp(x, 0.0, 1.0);
   return mix(mix(vec3(0.85,0.75,0.55), vec3(0.3,0.75,0.35), smoothstep(0.0,0.4,x)), vec3(0.1,0.25,0.75), smoothstep(0.4,1.0,x));

@@ -6,7 +6,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { Pass } from 'three/examples/jsm/postprocessing/Pass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { AU, G } from '../core/constants';
-import { clamp } from '../core/math';
+import { clamp, smoothstep } from '../core/math';
 import { V3 } from '../core/vec3';
 import type { Body } from '../physics/body';
 import { orbitFromState, orbitPoints } from '../physics/orbits';
@@ -16,6 +16,7 @@ import { TerrestrialClimate } from '../climate/terrestrial';
 import type { Simulation } from '../sim/simulation';
 import { CameraController } from './camera';
 import { EyeAdaptation } from './exposure';
+import { GroundWeather } from './fx';
 import { Starfield } from './starfield';
 import { makeNoise3D } from './textures';
 import { rel, toThree } from './units';
@@ -61,6 +62,7 @@ export class Renderer {
   private labelsEl: HTMLDivElement;
   private labels = new Map<number, HTMLDivElement>();
   private wind: WindParticles;
+  private weather: GroundWeather;
   private realTime = 0;
   selectedId: number | null = null;
   fps = 60;
@@ -104,6 +106,9 @@ export class Renderer {
     overlay.appendChild(this.labelsEl);
     this.wind = new WindParticles();
     this.overlay.add(this.wind.lines);
+    this.weather = new GroundWeather(overlay);
+    this.scene.add(this.weather.group);
+    this.overlay.add(this.weather.overlayGroup);
     this.cam.groundHeight = (b, lat, lon) => {
       const v = this.views.get(b.id);
       return v instanceof RockyView ? v.heightAt(lat, lon) : 0;
@@ -123,6 +128,7 @@ export class Renderer {
     sim.events.on('merge', (e) => this.spawnImpact(e.pos, e.result, e.energy));
     sim.events.on('supernova', (e) => this.spawnSupernova(e.pos, e.body));
     sim.events.on('disrupted', (e) => this.spawnDebris(e.pos, e.primary));
+    sim.events.on('eruption', (e) => this.spawnEruption(e.body, e.lat, e.lon, e.vei));
     this.resize();
   }
 
@@ -202,6 +208,11 @@ export class Renderer {
       layer: view.layer,
       cameraAlt: this.cam.altitude(),
       pixelScale: this.renderer.getPixelRatio(),
+      occluders: (body: Body) => this.occludersFor(body, lights),
+      surface:
+        this.cam.mode === 'surface' && this.cam.target
+          ? { bodyId: this.cam.target.id, lat: this.cam.lat, lon: this.cam.lon, aboveGround: this.cam.alt - (this.cam.groundHeight ? this.cam.groundHeight(this.cam.target, this.cam.lat, this.cam.lon) : 0) }
+          : null,
     };
     const alive = new Set<number>();
     for (const b of sim.bodies) {
@@ -228,6 +239,15 @@ export class Renderer {
     this.updateEffects(camPos, dt);
     const fv = focus ? this.views.get(focus.id) : null;
     this.wind.update(fv instanceof RockyView && view.wind ? fv : null, focus, camPos, dt, this.realTime);
+    const tgt = this.cam.target;
+    this.weather.update({
+      body: tgt,
+      climate: tgt?.climate instanceof TerrestrialClimate ? tgt.climate : null,
+      surface: ctx.surface,
+      camPos,
+      dt,
+      brightness: view.mode === 'realistic' ? this.eye.sceneLuminance * this.eye.exposure * 1.6 : 0.6,
+    });
     this.bloom.enabled = view.bloom;
     this.bloom.strength = view.mode === 'realistic' ? 0.55 : 0.75;
     this.composer.render(dt);
@@ -339,7 +359,14 @@ export class Renderer {
       const important = b.id === this.sim.focusId || b.id === this.selectedId;
       const crowded = placed.some(([px, py]) => Math.abs(px - x) < 70 && Math.abs(py - y) < 16);
       const inside = this.cam.mode === 'surface' && b.id === this.sim.focusId;
-      if (!visible || inside || (crowded && !important)) {
+      // Standing on a world: bodies below the local horizon are hidden by the ground.
+      let belowHorizon = false;
+      const tgt = this.cam.target;
+      if (this.cam.mode === 'surface' && tgt && b !== tgt) {
+        const up = V3.sub(camPos, tgt.pos).normalize();
+        belowHorizon = V3.sub(b.pos, camPos).normalize().dot(up) < -0.01;
+      }
+      if (!visible || inside || belowHorizon || (crowded && !important)) {
         el.style.display = 'none';
         continue;
       }
@@ -442,6 +469,80 @@ export class Renderer {
         flash.scale.setScalar(size * (0.3 + 2 * t));
         (flash.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 1 - t * 3);
         (flash.material as THREE.MeshBasicMaterial).color.setRGB(3 * (1 - t), 2.2 * (1 - t), 1.2 * (1 - t));
+      },
+    });
+  }
+
+  /** Bodies between `body` and its brightest star that could cast a shadow on it. */
+  private occludersFor(body: Body, lights: LightSrc[]): { body: Body; atm: number }[] {
+    const main = lights.filter((l) => l.body !== body).sort((a, b) => b.L / b.body.pos.distTo(body.pos) ** 2 - a.L / a.body.pos.distTo(body.pos) ** 2)[0];
+    if (!main) return [];
+    const S = main.body;
+    const toS = V3.sub(S.pos, body.pos);
+    const dS = toS.len();
+    toS.scale(1 / dS);
+    const sunAng = S.radius / dS;
+    const out: { body: Body; atm: number; ang: number }[] = [];
+    for (const o of this.sim.bodies) {
+      if (o === body || o === S || o.isStarLike || o.radius < body.radius * 0.02) continue;
+      const d = V3.sub(o.pos, body.pos);
+      const dist = d.len();
+      if (dist >= dS || d.dot(toS) <= 0) continue;
+      const ang = o.radius / dist;
+      const sep = Math.acos(clamp(d.dot(toS) / dist, -1, 1));
+      // Within reach of any point of the body's disk.
+      if (sep > ang + sunAng + Math.min(1, body.radius / dist) * 1.1) continue;
+      const c = o.climate;
+      const atm = c instanceof TerrestrialClimate ? clamp(c.P / 1e5, 0, 1) : o.isGiant ? 1 : 0;
+      out.push({ body: o, atm, ang });
+    }
+    return out.sort((a, b) => b.ang - a.ang).slice(0, 3);
+  }
+
+  /** Ash and steam column rising from an erupting volcano, spreading into an umbrella cloud. */
+  private spawnEruption(body: Body, lat: number, lon: number, vei: number): void {
+    const n = 500;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+    const mat = new THREE.PointsMaterial({ color: 0x9a8a78, size: 3, sizeAttenuation: false, transparent: true, depthWrite: false, opacity: 0.9 });
+    const pts = new THREE.Points(geo, mat);
+    pts.frustumCulled = false;
+    this.scene.add(pts);
+    const seeds = Array.from({ length: n }, () => [Math.random(), Math.random(), Math.random()]);
+    const top = 15e3 * Math.pow(1.6, vei - 5);
+    const spread = top * 3;
+    this.effects.push({
+      obj: pts,
+      pos: body.pos.clone(),
+      age: 0,
+      life: 25,
+      update: (e, c) => {
+        const t = e.age / e.life;
+        const cl = Math.cos(lat);
+        const f = body.frame();
+        const d = (x: number, y: number, z: number) => new V3(f.x.x * x + f.y.x * y + f.z.x * z, f.x.y * x + f.y.y * y + f.z.y * z, f.x.z * x + f.y.z * y + f.z.z * z);
+        const up = d(cl * Math.cos(lon), cl * Math.sin(lon), Math.sin(lat));
+        const east = d(-Math.sin(lon), Math.cos(lon), 0);
+        const north = up.cross(east);
+        const base = V3.add(body.pos, up.clone().scale(body.radius));
+        rel(base, c.camPos, e.obj.position);
+        const arr = (geo.getAttribute('position') as THREE.BufferAttribute).array as Float32Array;
+        const grow = Math.min(1, t * 4);
+        for (let i = 0; i < n; i++) {
+          const [a, r, h] = seeds[i];
+          const hh = top * grow * Math.pow(h, 0.6);
+          const umb = smoothstep(0.75, 1, h) * spread * Math.min(1, t * 2) * Math.sqrt(r);
+          const col = top * 0.06 * r;
+          const ang = a * Math.PI * 2;
+          const v = up.clone().scale(hh).addScaled(east, Math.cos(ang) * (col + umb)).addScaled(north, Math.sin(ang) * (col + umb));
+          const tv = toThree(v);
+          arr[3 * i] = tv.x;
+          arr[3 * i + 1] = tv.y;
+          arr[3 * i + 2] = tv.z;
+        }
+        (geo.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+        mat.opacity = 0.9 * (1 - smoothstep(0.7, 1, t));
+        mat.color.setRGB(0.6, 0.54, 0.47).multiplyScalar(view.mode === 'realistic' ? Math.min(3, 0.35 * c.exposure) : 0.8);
       },
     });
   }

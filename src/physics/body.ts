@@ -106,6 +106,10 @@ export class Body {
   tidallyLocked = false;
   /** Progress toward tidal locking (0..1). */
   lockProgress = 0;
+  /** Period of axial precession driven by stellar and lunar torques (s); Infinity if none. */
+  precessionPeriod = Infinity;
+  /** Recent stellar flare brightening (0 = quiet), decays in minutes. */
+  flare = 0;
   kind: BodyKind = 'terrestrial';
   star: StarState | null = null;
   climate: TerrestrialClimate | GasGiantClimate | null = null;

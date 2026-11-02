@@ -61,6 +61,12 @@ export class Civilization {
   founded: number;
   name: string;
   version = 0;
+  /** Policy: a carbon price cuts fossil emissions and speeds the clean-energy transition. */
+  carbonTax = false;
+  /** Policy: stratospheric sulfate injection maintained by the civilization (optical depth). */
+  geoengineering = 0;
+  /** Soot from a nuclear war, handed to the climate on the next step. */
+  private soot = 0;
   private rng: Rng;
   private milestones = new Set<string>();
   onEvent: ((msg: string, kind: 'info' | 'warn' | 'danger') => void) | null = null;
@@ -162,7 +168,7 @@ export class Civilization {
     // Technology advances with population; crises set it back.
     const stress = kSum > 0 ? clamp(total / kSum - 1, 0, 1) : 1;
     if (this.era !== 'collapsed') {
-      const rate = this.tech < 1 ? 2e-4 * Math.log10(1 + total / 1e6) : this.tech < 2 ? 3e-3 : 0;
+      const rate = this.tech < 1 ? 2e-4 * Math.log10(1 + total / 1e6) : this.tech < 2 ? 3e-3 * (this.carbonTax ? 2.5 : 1) : 4e-4;
       this.tech += rate * yr * (1 - stress);
     }
     const prevEra = this.era;
@@ -187,7 +193,7 @@ export class Civilization {
       this.onEvent?.('Population has halved from its peak as the climate deteriorates.', 'danger');
     }
     // Emissions: per-capita CO₂ (t/yr) by era.
-    const perCapita = this.era === 'industrial' ? 4.8 * smoothstep(1, 1.15, this.tech) * (1 - smoothstep(1.7, 2, this.tech)) : this.era === 'agrarian' ? 0.05 : this.era === 'clean' ? 0.2 : 0;
+    const perCapita = (this.era === 'industrial' ? 4.8 * smoothstep(1, 1.15, this.tech) * (1 - smoothstep(1.7, 2, this.tech)) : this.era === 'agrarian' ? 0.05 : this.era === 'clean' ? 0.2 : 0) * (this.carbonTax && this.era === 'industrial' ? 0.35 : 1);
     this.emissions = (total * perCapita * 1000) / YEAR;
     const co2 = this.emissions * dt;
     this.cumulativeCO2 += co2;
@@ -198,7 +204,12 @@ export class Civilization {
       absorbed = this.excessCO2 * 0.55 * (1 - Math.exp(-dt / (60 * YEAR)));
       this.excessCO2 -= absorbed;
     }
-    const aerosol = this.era === 'industrial' ? 0.012 * (this.emissions / ((4e13 / YEAR) || 1)) : 0;
+    let aerosol = this.era === 'industrial' ? 0.012 * (this.emissions / ((4e13 / YEAR) || 1)) : 0;
+    if (this.era !== 'collapsed') aerosol = Math.max(aerosol, this.geoengineering);
+    if (this.soot > 0) {
+      aerosol = Math.max(aerosol, this.soot);
+      this.soot = 0;
+    }
     // Night lights: urban dwellers × built-up area per dweller, as a fraction of the land.
     const urbanization = this.era === 'agrarian' ? 0.06 : this.era === 'collapsed' ? 0 : this.era === 'clean' ? 0.72 : 0.3 + 0.25 * smoothstep(1, 1.8, this.tech);
     const litPerPerson = this.era === 'agrarian' ? 60 : 380; // m² of lit built-up land per urban dweller
@@ -210,6 +221,19 @@ export class Civilization {
     }
     this.version++;
     return { co2: co2 - absorbed, aerosol };
+  }
+
+  /**
+   * Nuclear war: cities burn, most of the population dies, technology is set back, and smoke
+   * lofted into the stratosphere darkens the sky for years (nuclear winter).
+   */
+  nuclearWar(): void {
+    for (let k = 0; k < this.pop.length; k++) this.pop[k] *= this.lights[k] > 0.02 ? 0.25 : 0.6;
+    this.totalPop = this.pop.reduce((s, x) => s + x, 0);
+    this.tech = Math.max(0.6, this.tech - 0.6);
+    this.soot = 2.5;
+    this.onEvent?.('Nuclear war! Burning cities fill the stratosphere with soot — a nuclear winter is coming.', 'danger');
+    this.version++;
   }
 
   /** Fraction of forest cleared in a cell for farms and cities. */
@@ -230,6 +254,8 @@ export class Civilization {
       founded: this.founded,
       name: this.name,
       milestones: [...this.milestones],
+      carbonTax: this.carbonTax,
+      geoengineering: this.geoengineering,
     };
   }
 
@@ -245,6 +271,8 @@ export class Civilization {
     this.founded = o.founded ?? 0;
     this.name = o.name ?? this.name;
     for (const m of o.milestones ?? []) this.milestones.add(m);
+    this.carbonTax = !!o.carbonTax;
+    this.geoengineering = o.geoengineering ?? 0;
   }
 
   void(): void {

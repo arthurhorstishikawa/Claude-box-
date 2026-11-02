@@ -1,4 +1,4 @@
-import { DAY, G, L_SUN, M_EARTH, M_SUN, R_EARTH, TWO_PI, YEAR } from '../core/constants';
+import { AU, DAY, G, L_SUN, M_EARTH, M_SUN, R_EARTH, TWO_PI, YEAR } from '../core/constants';
 import { Emitter } from '../core/events';
 import { clamp, wrap2Pi } from '../core/math';
 import { Rng } from '../core/rng';
@@ -42,6 +42,8 @@ export interface SimEvents extends Record<string, unknown> {
   disrupted: { body: Body; primary: Body; pos: V3 };
   reset: undefined;
   changed: Body;
+  eruption: { body: Body; lat: number; lon: number; vei: number };
+  flare: { star: Body; superflare: boolean };
 }
 
 export class Simulation {
@@ -283,6 +285,7 @@ export class Simulation {
     this.updateRotation(done);
     this.updateStars(done);
     this.updateTides(done);
+    this.updateFlares(done);
     this.checkRoche();
     for (const b of this.bodies) b.age += done;
     this.stepClimates(done, rdt);
@@ -405,6 +408,7 @@ export class Simulation {
         continue;
       }
       const P = orbitPeriod(o);
+      this.precess(b, p, o.W, dt);
       const k = 1 - Math.exp(-dt / Math.max(10 * P, 1));
       b.eccSmoothed += (o.e - b.eccSmoothed) * k;
       const e = Math.max(b.forcedEcc, b.eccSmoothed);
@@ -425,6 +429,62 @@ export class Simulation {
           b.tidallyLocked = true;
           this.notify(`${b.name} has become tidally locked to ${p.name}.`, 'info', b.id);
         }
+      }
+    }
+  }
+
+  /**
+   * Axial precession: the star (and any moons) pull on the equatorial bulge raised by the
+   * body's spin, so the spin axis slowly circles the orbit normal (Earth: ~26 000 years).
+   * Over time this shifts which hemisphere has summer at perihelion — one of the
+   * Milankovitch cycles that pace ice ages.
+   */
+  private precess(b: Body, primary: Body, normal: V3, dt: number): void {
+    const P = b.rotationPeriod;
+    if (b.tidallyLocked || !Number.isFinite(P) || P === 0 || b.kind === 'smallBody') {
+      b.precessionPeriod = Infinity;
+      return;
+    }
+    const w = (2 * Math.PI) / Math.abs(P);
+    const q = (w * w * b.radius ** 3) / (G * b.mass);
+    const H = clamp(0.95 * q, 0, 0.1); // dynamical ellipticity from rotational flattening
+    let pull = (G * primary.mass) / primary.pos.distTo(b.pos) ** 3;
+    for (const m of this.bodies) if (m !== b && m.primaryId === b.id && !m.isStarLike) pull += (G * m.mass) / Math.max(m.pos.distTo(b.pos), b.radius) ** 3;
+    const cosE = b.spinAxis.dot(normal);
+    const rate = (1.5 * H * Math.abs(cosE) * pull) / w;
+    if (!(rate > 0)) {
+      b.precessionPeriod = Infinity;
+      return;
+    }
+    b.precessionPeriod = (2 * Math.PI) / rate;
+    b.setSpinAxis(V3.rotate(b.spinAxis, normal, -rate * dt * Math.sign(cosE || 1)));
+  }
+
+  /** Red-dwarf flares: brief brightenings; rare superflares erode close planets' air. */
+  private updateFlares(dt: number): void {
+    for (const s of this.bodies) {
+      if (s.flare > 0) s.flare *= Math.exp(-dt / 600);
+      if (!s.star || s.star.phase !== 'MS' || s.star.T > 3900 || dt <= 0) continue;
+      // Activity fades over billions of years.
+      const act = clamp(Math.pow(Math.max(s.star.age / YEAR, 1e7) / 1e9, -0.6), 0.05, 4);
+      const rate = act / (3 * DAY);
+      if (dt < 30 * DAY && Math.random() < 1 - Math.exp(-dt * rate)) {
+        const superflare = Math.random() < 0.03;
+        s.flare = Math.max(s.flare, superflare ? 3 : 0.4 + Math.random());
+        this.events.emit('flare', { star: s, superflare });
+        if (superflare) this.notify(`${s.name} unleashed a superflare!`, 'warn', s.id);
+      }
+      // Integrated superflare erosion of close-in atmospheres (applied at any speed).
+      const superCount = rate * 0.03 * dt; // superflares during this step
+      for (const b of this.bodies) {
+        const c = b.climate;
+        if (!(c instanceof TerrestrialClimate) || this.primaryOf(b) !== s) continue;
+        const d = b.pos.distTo(s.pos) / AU;
+        const hz = Math.sqrt(s.star.L / L_SUN);
+        // ~2e-10 of the air per superflare at the habitable-zone distance, ∝ 1/(d²·g): a few
+        // tenths of an atmosphere per Gyr for an Earth around an active M dwarf.
+        const frac = superCount * 2e-10 * (hz / Math.max(d, 1e-4)) ** 2 * (9.81 / Math.max(b.surfaceGravity(), 0.5));
+        if (frac > 0) c.stripAtmosphere(Math.min(0.5, frac));
       }
     }
   }
@@ -728,6 +788,25 @@ export class Simulation {
   }
 
   /** Advance climate models within a per-frame CPU budget (focused world first). */
+  /** Spacefaring civilizations settle other habitable worlds of their system. */
+  private colonize(home: Body, c: TerrestrialClimate, dt: number): void {
+    if (Math.random() > 1 - Math.exp(-dt / (300 * YEAR))) return;
+    const star = (x: Body | null): Body | null => {
+      for (let n = 0; x && n < 6; x = this.primaryOf(x), n++) if (x.star) return x;
+      return null;
+    };
+    const sun = star(home);
+    const targets = this.bodies.filter((b) => b !== home && b.climate instanceof TerrestrialClimate && !b.climate.civ && star(b) === sun && b.climate.stats.meanT > 250 && b.climate.stats.meanT < 320 && b.climate.P > 5e3);
+    if (!targets.length) return;
+    const t = targets[Math.floor(Math.random() * targets.length)];
+    const tc = t.climate as TerrestrialClimate;
+    tc.seedCivilization('emergent');
+    tc.civ!.tech = 2.05;
+    tc.civ!.name = `Colony of ${home.name}`;
+    tc.civ!.seedPopulation = 1e6;
+    this.notify(`Colonists from ${home.name} have settled ${t.name}!`, 'success', t.id);
+  }
+
   private stepClimates(dt: number, realDt: number): void {
     const t0 = performance.now();
     const climateBodies = this.bodies.filter((b) => b.climate);
@@ -761,6 +840,9 @@ export class Simulation {
         const h = pend / n;
         for (let s = 0; s < n; s++) c.step(h, ctx);
         if (this.settings.civilizations) c.civStep(pend, ctx);
+        for (const e of c.eruptions) this.events.emit('eruption', { body: b, ...e });
+        c.eruptions.length = 0;
+        if (c.civ && c.civ.era === 'clean' && c.civ.tech > 2.1 && this.settings.civilizations) this.colonize(b, c, pend);
       } else if (c instanceof GasGiantClimate) {
         c.step(pend, this.giantContext(b, il, isFocus ? realDt : realDt * 4));
       }

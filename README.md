@@ -25,6 +25,17 @@ civilization industrialize — and watch the climate respond.
   under brown dwarfs, red under M dwarfs, green under the Sun) and changes albedo; biosphere
   oxygen and methane; civilizations that grow, burn fossil fuels, clear forests, warm their
   world — and can collapse because of it. City lights show up on night sides.
+- **Oceans, ice ages and drifting continents**: wind-driven ocean gyres with western boundary
+  currents carry heat poleward; axial precession (≈26 kyr for Earth) shifts the seasons over
+  millennia; on plate-tectonic worlds the continents drift ~5 cm/yr and collide over millions
+  of years; volcanoes erupt (or set one off) and their sulfate haze cools the planet.
+- **Evolution**: seed microbes on a wet world and watch the stages unfold over billions of
+  years — methane-making microbes, oxygenic photosynthesis (a Great Oxidation Event, sometimes
+  followed by a snowball), land plants, complex animals, and finally intelligence. Biomes
+  (tundra, boreal and temperate forest, grassland, desert, savanna, rainforest) are mapped from
+  the climate. Civilizations can adopt a carbon tax, geoengineer the stratosphere, wage nuclear
+  war (nuclear winter), and settle other worlds of their system once they are spacefaring.
+- **Stars that live**: red dwarfs flare (rare superflares slowly erode close-in atmospheres).
 - **Impacts** release energy, heat the atmosphere, loft dust (impact winter) and **carve
   craters** into the procedural terrain.
 - **Procedural worlds**: every surface — continents, plate boundaries, volcanoes, ice shells,
@@ -36,6 +47,9 @@ civilization industrialize — and watch the climate respond.
   model. In the toolbox, **🎲 Random rocky** and **🎲 Random giant** drop a random planet onto a
   stable orbit around the current star (type, air and water follow from where it lands), and
   *Design a planet* lets you set everything by hand.
+- **On the ground**: forests coloured by the star-matched pigment (turning in autumn), rain,
+  snow and lightning from the local weather, aurorae over magnetized worlds, and eclipse
+  shadows from moons and planets (with a copper-red lunar eclipse).
 - **Rendering**: HDR with **human-eye adaptation** in *Realistic* mode (fly close to a star
   and everything else vanishes; on a planet's night side your eye adapts and the stars and
   Milky Way come out), an *Enhanced* mode that keeps everything visible, Milky Way / stars /

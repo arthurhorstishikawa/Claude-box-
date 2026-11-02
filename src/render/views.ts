@@ -9,6 +9,7 @@ import { TerrestrialClimate } from '../climate/terrestrial';
 import { plantPigment } from '../climate/life';
 import type { TerrainStyle } from '../climate/terrain';
 import {
+  makeAuroraMaterial,
   makeAtmosphereMaterial,
   makeCloudShellMaterial,
   makeGiantMaterial,
@@ -18,6 +19,7 @@ import {
   makeTerrainMaterial,
   makeVolumeCloudMaterial,
 } from './materials';
+import { TreeField } from './fx';
 import { buildPatchGeometry, HeightField, parentNode, patchNode, selectPatches, type PatchNode } from './terrain';
 import { bandTexture, ClimateTextures, elevationTexture, ringTexture, thermalTexture, updateElevationTexture } from './textures';
 import { bodyBasis, rel, toThree } from './units';
@@ -41,6 +43,52 @@ export interface FrameCtx {
   layer: LayerId;
   cameraAlt: number;
   pixelScale: number;
+  /** Set when the camera stands/flies on a body's surface. */
+  surface: { bodyId: number; lat: number; lon: number; aboveGround: number } | null;
+  /** Bodies that may eclipse the main star as seen from `body` (largest first). */
+  occluders: (body: Body) => { body: Body; atm: number }[];
+}
+
+/** Eclipse uniforms: occluder spheres (camera-relative) and the main star's angular radius. */
+export function setOcc(u: Record<string, THREE.IUniform>, body: Body, ctx: FrameCtx): void {
+  if (!u.uOccN) return;
+  const occ = ctx.occluders(body);
+  const v = u.uOcc.value as THREE.Vector4[];
+  const a = u.uOccAtm.value as number[];
+  occ.slice(0, 3).forEach((o, i) => {
+    const r = rel(o.body.pos, ctx.camPos);
+    v[i].set(r.x, r.y, r.z, o.body.radius);
+    a[i] = o.atm;
+  });
+  u.uOccN.value = Math.min(3, occ.length);
+  const main = ctx.lights.find((l) => l.body !== body);
+  u.uSunAng.value = main ? main.body.radius / Math.max(main.body.pos.distTo(body.pos), 1) : 0.0047;
+}
+
+/** Aurora shell: magnetized worlds only; returns false if the body has no aurora. */
+function updateAurora(mesh: THREE.Mesh, mat: THREE.ShaderMaterial, body: Body, R: number, inner: number, outer: number, ctx: FrameCtx, giant: boolean, center: THREE.Vector3, quat: THREE.Quaternion): void {
+  const main = ctx.lights.find((l) => l.body !== body);
+  const star = main?.body;
+  const act = 1 + 2.5 * (star?.flare ?? 0) + (star?.star && star.star.T < 4000 ? 1.5 : 0);
+  const au = mat.uniforms;
+  au.uR.value = R;
+  au.uInner.value = inner;
+  au.uOuter.value = outer;
+  (au.uPlanetCenter.value as THREE.Vector3).copy(center);
+  (au.uBodyRot.value as THREE.Matrix3).setFromMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(quat)).transpose();
+  if (main) (au.uSunDir0.value as THREE.Vector3).copy(toThree(V3.sub(main.body.pos, body.pos).normalize()));
+  au.uTime.value = ctx.realTime;
+  au.uIntensity.value = (ctx.realistic ? 6e-5 * ctx.exposure : 0.35) * act * (giant ? 0.6 : 1);
+  if (giant) {
+    (au.uColLow.value as THREE.Vector3).set(0.85, 0.35, 1.0);
+    (au.uColHigh.value as THREE.Vector3).set(1.0, 0.4, 0.7);
+    au.uOvalLat.value = 1.2;
+  }
+  mesh.scale.setScalar(outer);
+  const inside = V3.sub(ctx.camPos, body.pos).len() < outer * 1.001;
+  mat.side = inside ? THREE.BackSide : THREE.FrontSide;
+  mat.depthTest = !inside;
+  mesh.visible = true;
 }
 
 const TMP = new THREE.Vector3();
@@ -142,6 +190,9 @@ export class RockyView extends BodyView {
   private atmo: THREE.Mesh;
   private atmoMat = makeAtmosphereMaterial();
   private dummy: THREE.DataTexture;
+  private trees = new TreeField();
+  private auroraMat = makeAuroraMaterial();
+  private aurora = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 48), this.auroraMat);
   cloudTop = 10e3;
 
   constructor(body: Body, noise3d: THREE.Data3DTexture) {
@@ -159,6 +210,12 @@ export class RockyView extends BodyView {
       m.frustumCulled = false;
       this.group.add(m);
     }
+    this.group.add(this.trees.anchor);
+    (this.auroraMat.uniforms.uMagAxis.value as THREE.Vector3).set(Math.sin(0.17), 0, Math.cos(0.17));
+    this.aurora.renderOrder = 5;
+    this.aurora.frustumCulled = false;
+    this.aurora.visible = false;
+    this.group.add(this.aurora);
   }
 
   get climate(): TerrestrialClimate | null {
@@ -272,7 +329,7 @@ export class RockyView extends BodyView {
     if (layerOn) {
       const L = LAYERS[li];
       (u.uLayerRange.value as THREE.Vector2).set(L.range[0], L.range[1]);
-      u.uPalette.value = L.palette === 'blueRed' ? 1 : L.palette === 'rain' ? 2 : 0;
+      u.uPalette.value = L.palette === 'blueRed' ? 1 : L.palette === 'rain' ? 2 : L.palette === 'biome' ? 3 : 0;
     }
     const sea = c && c.waterTotal > 0 && Number.isFinite(c.seaLevel) ? c.seaLevel : -1e9;
     u.uSeaLevel.value = sea;
@@ -293,6 +350,7 @@ export class RockyView extends BodyView {
     // Lit urban ground ≈ 1e-4 of sunlit-white radiance (a few cd/m²).
     u.uLightsScale.value = (ctx.realistic ? 1.2e-4 * ctx.exposure : 0.9) * (c?.civ ? 1 : 0);
     setLights(u, b, ctx);
+    setOcc(u, b, ctx);
     // Atmosphere uniforms shared by surface, clouds and sky.
     const setAtmo = (uu: Record<string, THREE.IUniform>) => {
       (uu.uBetaR.value as THREE.Vector3).copy(ap.betaR);
@@ -381,6 +439,7 @@ export class RockyView extends BodyView {
     cu.uOpacity.value = (1 - volFade) * clamp((c?.P ?? 1e5) / 2e4, 0.25, 1);
     cu.uFlowScale.value = 1;
     setLights(cu, b, ctx);
+    setOcc(cu, b, ctx);
     setAtmo(cu);
     const deckCol = ap.deck > 0.1 ? new THREE.Vector3(0.95, 0.88, 0.68) : c?.vol.id === 'CH4' ? new THREE.Vector3(0.95, 0.75, 0.45) : new THREE.Vector3(1, 1, 1);
     (cu.uCloudColor.value as THREE.Vector3).copy(deckCol);
@@ -423,6 +482,16 @@ export class RockyView extends BodyView {
       this.volMat.side = inside ? THREE.BackSide : THREE.FrontSide;
       this.volMat.depthTest = !inside;
     }
+    // Aurorae on magnetized worlds (a fast-spinning, sizeable rocky planet with air).
+    const magnetized = !!c && b.mass > 0.3 * 5.972e24 && Number.isFinite(b.rotationPeriod) && Math.abs(b.rotationPeriod) < 4 * 86400 && c.P > 500 && ctx.cameraAlt < R * 60;
+    if (magnetized) updateAurora(this.aurora, this.auroraMat, b, R, R + 90e3, R + 320e3, ctx, false, this.group.position, this.group.quaternion);
+    else this.aurora.visible = false;
+    // Forests around a landed camera.
+    const sf = ctx.surface;
+    if (c && sf && sf.bodyId === b.id && sf.aboveGround < 1500 && c.lifeStage >= 3 && c.biosphere) {
+      this.trees.update(c, sf.lat, sf.lon, R, (la, lo) => this.heightAt(la, lo), sea > -1e8 ? sea : -1e9);
+      this.trees.light((u.uSunDir.value as THREE.Vector3[])[0], (u.uSunRadiance.value as THREE.Vector3[])[0]);
+    } else this.trees.hide();
     this.atmo.visible = ap.has;
     if (ap.has) {
       this.atmo.scale.setScalar(ap.top);
@@ -465,6 +534,8 @@ export class GiantView extends BodyView {
   private volMat: THREE.ShaderMaterial;
   private bandClock = 0;
   private lastClass = -1;
+  private auroraMat = makeAuroraMaterial();
+  private aurora = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 48), this.auroraMat);
 
   constructor(body: Body, noise3d: THREE.Data3DTexture) {
     super(body);
@@ -479,6 +550,9 @@ export class GiantView extends BodyView {
     this.volume.renderOrder = 3;
     this.group.add(this.volume);
     for (const m of [this.sphere, this.atmo, this.volume]) m.frustumCulled = false;
+    this.aurora.renderOrder = 5;
+    this.aurora.frustumCulled = false;
+    this.group.add(this.aurora);
   }
 
   get climate(): GasGiantClimate | null {
@@ -530,6 +604,11 @@ export class GiantView extends BodyView {
     }
     u.uNumVort.value = nv;
     setLights(u, b, ctx);
+    setOcc(u, b, ctx);
+    if (b.kind !== 'brownDwarf' && ctx.cameraAlt < R * 80) {
+      const Hs = this.scaleHeight();
+      updateAurora(this.aurora, this.auroraMat, b, R, R + 15 * Hs, R + 60 * Hs, ctx, true, this.group.position, this.group.quaternion);
+    } else this.aurora.visible = false;
     const Hr = this.scaleHeight();
     const k = 0.25 * 0.4; // H2/He: weak per-molecule Rayleigh, ~0.4 bar above the clouds
     const set = (uu: Record<string, THREE.IUniform>) => {
@@ -625,6 +704,7 @@ export class GiantView extends BodyView {
     this.ringMat.dispose();
     this.atmoMat.dispose();
     this.volMat.dispose();
+    this.auroraMat.dispose();
     super.dispose();
   }
 }
@@ -675,7 +755,7 @@ export class StarView extends BodyView {
     } else {
       (u.uColor.value as THREE.Vector3).set(color[0], color[1], color[2]);
       // Enhanced: a fixed display brightness that keeps granulation, spots and limb darkening visible.
-      u.uRadiance.value = ctx.realistic ? radiancePhys * ctx.exposure : 1.05 + Math.log10(1 + radiancePhys) * 0.05;
+      u.uRadiance.value = (ctx.realistic ? radiancePhys * ctx.exposure : 1.05 + Math.log10(1 + radiancePhys) * 0.05) * (1 + 0.6 * b.flare);
     }
     u.uTime.value = ctx.realTime;
     u.uCellScale.value = s && R > 50 * 6.957e8 ? 6 : 30;
@@ -694,6 +774,7 @@ export class StarView extends BodyView {
     if (ctx.realistic) gu.uIntensity.value = (flux / 1361) * ctx.exposure * (0.25 / Math.max(minPx * minPx, angR * angR)) * 0.02 + radiancePhys * ctx.exposure * 0.02 * (1 - pointLike);
     else gu.uIntensity.value = (0.6 + 2.5 * pointLike * clamp(Math.log10(1 + (L / L_SUN) * 10) / 3, 0.2, 1.5)) * (0.25 + 0.75 * clamp(1 - angR / 0.15, 0, 1));
     gu.uCore.value = clamp((angR * dist) / size, 0.02, 0.4);
+    gu.uIntensity.value *= 1 + 2 * b.flare;
     if (b.kind === 'blackHole') {
       // Photon ring hint.
       (gu.uColor.value as THREE.Vector3).set(0.6, 0.7, 1.0);

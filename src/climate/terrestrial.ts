@@ -125,6 +125,9 @@ export interface ClimateStats {
 }
 
 /** Equirectangular layers the renderer and map can display. */
+export const BIOMES = ['Ocean', 'Ice', 'Tundra', 'Boreal forest', 'Temperate forest', 'Grassland', 'Desert', 'Savanna', 'Rainforest', 'Barren'] as const;
+export const LIFE_STAGES = ['Lifeless', 'Microbial', 'Oxygenic photosynthesis', 'Land plants', 'Complex animals'] as const;
+
 export type FieldId =
   | 'Ts'
   | 'Ta'
@@ -142,7 +145,9 @@ export type FieldId =
   | 'habitable'
   | 'elev'
   | 'tAnnual'
-  | 'frost';
+  | 'frost'
+  | 'current'
+  | 'biome';
 
 /**
  * Column vapour budget over dt:  dw/dt = kE·(ws − w)  +  S  −  kC·(w − wc)⁺
@@ -237,6 +242,13 @@ export class TerrestrialClimate {
   tCold!: Float64Array;
   pAnnual!: Float64Array;
   circ!: Circulation;
+  /** Wind-driven ocean surface currents (m/s): Sverdrup gyres with western boundary currents. */
+  uo!: Float64Array;
+  vo!: Float64Array;
+  /** Eruptions since the last time the simulation collected them (for effects and news). */
+  eruptions: { lat: number; lon: number; vei: number }[] = [];
+  /** Running clock for random eruptions. */
+  private eruptClock = 0;
   storms: StormSystem;
   private C1!: Float64Array;
   private C2!: Float64Array;
@@ -276,6 +288,16 @@ export class TerrestrialClimate {
   spinningUp = false;
   /** Clock for biosphere emergence checks (s of habitable, living conditions). */
   lifeClock = 0;
+  /** 0 lifeless, 1 microbes, 2 oxygenic photosynthesis, 3 land plants, 4 complex animals. */
+  lifeStage = 0;
+  /** Years of continuously hostile conditions (for extinctions). */
+  private hostileYears = 0;
+  /** Years spent (in good conditions) in the current stage of evolution. */
+  lifeProgress = 0;
+  /** Continental drift elapsed (Myr) and the amount the current terrain reflects. */
+  driftMyr = 0;
+  driftApplied = 0;
+  private driftRealClock = 0;
   private anom!: Float64Array;
   private simpleT: Float64Array | null = null;
   private historyClock = 0;
@@ -291,6 +313,7 @@ export class TerrestrialClimate {
     this.style = init.terrain;
     this.seed = init.terrainSeed;
     this.biosphere = init.biosphere;
+    this.lifeStage = init.biosphere ? 4 : 0;
     this.hazeBase = init.haze ?? 0;
     this.dustBase = init.dust ?? 0;
     this.dust = this.dustBase;
@@ -355,7 +378,7 @@ export class TerrestrialClimate {
 
   private loadTerrain(style: TerrainStyle, seed: number) {
     const big = style === 'earthlike' || style === 'oceanic' || style === 'continental' || style === 'marslike' || style === 'venuslike' || style === 'titanlike';
-    this.terrain = cloneTerrain(generateTerrain(style, seed, big ? 512 : 384, big ? 256 : 192));
+    this.terrain = cloneTerrain(generateTerrain(style, seed, big ? 512 : 384, big ? 256 : 192, this.driftApplied));
     for (const c of this.craters) applyCrater(this.terrain, c, this.R);
     this.style = style;
     this.seed = seed;
@@ -443,6 +466,8 @@ export class TerrestrialClimate {
     this.dLand = f();
     this.landMask = f();
     this.samples = new Float32Array(N * this.S);
+    this.uo = f();
+    this.vo = f();
     this.circ = new Circulation(grid);
   }
 
@@ -675,6 +700,9 @@ export class TerrestrialClimate {
     if (!(dt > 0)) return;
     if (dt > SIMPLE_DT) {
       this.stepSimple(dt, ctx);
+      this.evolveLife(dt);
+      this.randomEruptions(dt, ctx);
+      this.drift(dt, ctx);
       return;
     }
     this.mode = dt <= 86_400 ? 'weather' : 'seasonal';
@@ -1018,6 +1046,7 @@ export class TerrestrialClimate {
 
     // Ocean heat transport (slab ocean, split step) and weather-scale advection.
     if (hasLiquidReservoir) grid.diffuse(this.Ts, C1, Cocean1 * 2.5e4, R, dt, this.oceanMask);
+    if (hasLiquidReservoir) this.advectOcean(ctx.omega, R, dt);
     if (hasAtm && dt < 2 * DAY) grid.advect(this.Ta, this.circ.u, this.circ.v, R, dt * 0.7);
 
     // 6. Hydrology.
@@ -1032,6 +1061,7 @@ export class TerrestrialClimate {
 
     // 7. Long-term geochemistry and escape.
     this.longTerm(dt, ctx, bulk, xuv);
+    this.randomEruptions(dt, ctx);
 
     // 8. Clouds, circulation & storms.
     this.updateClouds(P);
@@ -1072,7 +1102,24 @@ export class TerrestrialClimate {
     this.updateClimatology(dt);
     this.updateSeaLevel();
     this.computeStats(ctx, bulk, tauSum, dt);
+    this.evolveLife(dt);
+    this.drift(dt, ctx);
     this.version++;
+  }
+
+  /** Plate tectonics on plate-style worlds: continents move ~5 cm/yr; the map is rebuilt in steps. */
+  private drift(dt: number, ctx: ClimateContext): void {
+    if (!ctx.geology || this.spinningUp || !(this.style === 'earthlike' || this.style === 'oceanic' || this.style === 'continental')) return;
+    this.driftMyr += dt / (1e6 * YEAR);
+    this.driftRealClock += Math.max(ctx.realDt, 0);
+    if (this.driftMyr - this.driftApplied >= 10 && this.driftRealClock > 2.5) {
+      this.driftApplied = Math.round(this.driftMyr / 10) * 10;
+      this.driftRealClock = 0;
+      this.loadTerrain(this.style, this.seed);
+      this.computeCellTerrain();
+      this.updateSeaLevel();
+      this.onEvent?.(`Continental drift: ${this.driftApplied.toFixed(0)} million years of plate motion have reshaped the continents.`, 'info');
+    }
   }
 
 
@@ -1554,7 +1601,9 @@ export class TerrestrialClimate {
     if (this.spinningUp) return;
     // Plants store carbon: spreading forests draw down CO₂, dying ones release it.
     const dC = this.vegetationCarbon() - c0;
-    this.gas.CO2 = Math.max(0, this.gas.CO2 - dC * (44 / 12));
+    // Plants cannot draw CO₂ below their compensation point (~10 Pa).
+    const floor = Math.min(this.gas.CO2, this.partialToMass('CO2', 10));
+    this.gas.CO2 = Math.max(floor, this.gas.CO2 - dC * (44 / 12));
     // Photosynthetic oxygen (slow net burial, only while the air is still oxygen-poor) and methane.
     const vegFrac = this.stats.vegetation || 0;
     if (vegFrac > 0.01) {
@@ -1600,7 +1649,9 @@ export class TerrestrialClimate {
       const V = (3e11 / YEAR) * (A / 5.1e14) * clamp(ctx.geothermal / 0.087, 0, 50) * (ctx.mass > 6e23 ? 1 : 0.1);
       const pRef = 42;
       let M = this.gas.CO2;
-      const Mref = M > 0 ? (pRef / Math.max(bulk.pp.CO2, 1e-6)) * M : 1;
+      // Mass of CO₂ at the reference partial pressure (independent of the current amount, so
+      // the weathering law stays well-behaved when CO₂ is nearly exhausted).
+      const Mref = this.partialToMass('CO2', pRef);
       // Implicit update: M' = M + dt (V − W0 f (M'/Mref)^0.3)
       if (Mref > 0 && Number.isFinite(Mref)) {
         let x = M;
@@ -1640,6 +1691,237 @@ export class TerrestrialClimate {
       if (lambdaW < 25) this.waterTotal *= Math.exp((-dt * (1 + lambdaW) * Math.exp(-lambdaW)) / (1e4 * YEAR));
     }
     void yr;
+  }
+
+  /**
+   * Wind-driven ocean circulation. Zonal wind stress curl drives a Sverdrup interior flow
+   * (β·V = curl τ / ρ₀) in every basin; mass returns poleward/equatorward in a narrow western
+   * boundary current — the Gulf Stream / Kuroshio pattern. Rows with no coast (a Southern Ocean)
+   * get a circumpolar wind drift instead. The mixed layer is then advected, so western sides of
+   * basins run warm and eastern sides cool, as on Earth.
+   */
+  private advectOcean(omega: number, R: number, dt: number): void {
+    const { grid } = this;
+    const { nLat, nLon } = grid;
+    const uo = this.uo,
+      vo = this.vo;
+    uo.fill(0);
+    vo.fill(0);
+    const rhoA = Math.max(1e-3, (this.P * (this.bulk?.molar || 0.029)) / (8.314 * 280));
+    const H = 500; // depth of the wind-driven layer (m)
+    const taux = new Float64Array(nLat);
+    for (let j = 0; j < nLat; j++) {
+      let s = 0;
+      for (let i = 0; i < nLon; i++) {
+        const k = j * nLon + i;
+        const u = this.circ.u[k];
+        s += rhoA * 1.3e-3 * Math.abs(u) * u;
+      }
+      taux[j] = s / nLon;
+    }
+    const isOcean = (k: number) => this.ocean[k] > 0.5 && this.seaIce[k] < 1;
+    for (let j = 1; j < nLat - 1; j++) {
+      const lat = grid.lat[j];
+      const dx = R * Math.max(grid.cosLat[j], 0.05) * grid.dLon;
+      // Ekman-like surface drift with the wind everywhere at sea.
+      for (let i = 0; i < nLon; i++) {
+        const k = j * nLon + i;
+        if (isOcean(k)) uo[k] = 0.02 * this.circ.u[k];
+      }
+      if (Math.abs(lat) < 0.06 || Math.abs(lat) > 1.25) continue;
+      const curl = -(taux[j - 1] - taux[j + 1]) / (2 * R * grid.dLat);
+      const beta = (2 * omega * Math.cos(lat)) / R;
+      if (Math.abs(beta) < 1e-14) continue;
+      const vInt = clamp(curl / (1025 * beta) / H, -0.08, 0.08);
+      // Find a land cell to start from (rows with no land: circumpolar, no gyre).
+      let start = -1;
+      for (let i = 0; i < nLon; i++) if (!isOcean(j * nLon + i)) start = i;
+      if (start < 0) continue;
+      // Walk eastward through basins; each basin's first (westernmost) cells carry the return flow.
+      let i = (start + 1) % nLon;
+      for (let n = 0; n < nLon; ) {
+        while (n < nLon && !isOcean(j * nLon + i)) {
+          i = (i + 1) % nLon;
+          n++;
+        }
+        const cells: number[] = [];
+        while (n < nLon && isOcean(j * nLon + i)) {
+          cells.push(j * nLon + i);
+          i = (i + 1) % nLon;
+          n++;
+        }
+        if (cells.length < 3) continue;
+        const wbc = Math.max(1, Math.round(cells.length / 12));
+        for (let c = wbc; c < cells.length; c++) vo[cells[c]] = vInt;
+        const back = (-vInt * (cells.length - wbc)) / wbc;
+        for (let c = 0; c < wbc; c++) vo[cells[c]] = clamp(back, -1.5, 1.5);
+      }
+      void dx;
+    }
+    // Heat moves with the whole wind-driven layer, so the 50 m mixed layer is carried ~H/50 faster.
+    const f = H / 50;
+    const tmpU = new Float64Array(grid.N),
+      tmpV = new Float64Array(grid.N);
+    for (let k = 0; k < grid.N; k++) {
+      tmpU[k] = clamp(uo[k] * f, -1.2, 1.2);
+      tmpV[k] = clamp(vo[k] * f, -1.2, 1.2);
+    }
+    // Advect *water* temperature: never below freezing, and land/ice cells stand in with their
+    // latitude's mean open-water temperature (so frozen or continental surfaces don't leak in).
+    const Tf = this.vol.TfreezeOcean;
+    const rowMean = new Float64Array(nLat).fill(NaN);
+    for (let j = 0; j < nLat; j++) {
+      let s = 0,
+        w = 0;
+      for (let i = 0; i < nLon; i++) {
+        const k = j * nLon + i;
+        if (this.oceanMask[k] > 0.5) {
+          s += Math.max(this.Ts[k], Tf);
+          w++;
+        }
+      }
+      if (w > 0) rowMean[j] = s / w;
+    }
+    for (let j = 0; j < nLat; j++)
+      if (Number.isNaN(rowMean[j])) {
+        let v = Tf;
+        for (let d = 1; d < nLat; d++) {
+          if (j - d >= 0 && !Number.isNaN(rowMean[j - d])) {
+            v = Math.min(rowMean[j - d], Tf + 4);
+            break;
+          }
+          if (j + d < nLat && !Number.isNaN(rowMean[j + d])) {
+            v = Math.min(rowMean[j + d], Tf + 4);
+            break;
+          }
+        }
+        rowMean[j] = v;
+      }
+    const X = new Float64Array(grid.N);
+    for (let k = 0; k < grid.N; k++) X[k] = this.oceanMask[k] > 0.5 ? Math.max(this.Ts[k], Tf) : rowMean[Math.floor(k / nLon)];
+    const X0 = Float64Array.from(X);
+    grid.advect(X, tmpU, tmpV, R, dt, 0.12);
+    for (let k = 0; k < grid.N; k++) {
+      const m = this.oceanMask[k];
+      if (m > 0) this.Ts[k] += m * (X[k] - X0[k]);
+    }
+  }
+
+  /**
+   * A volcanic eruption at (lat, lon) with explosivity index `vei` (5 = Mt St Helens,
+   * 6 = Pinatubo, 7 = Tambora, 8 = a supervolcano). Sulfate aerosols cool the planet for a few
+   * years; the CO₂ (large only for huge eruptions) warms it slowly.
+   */
+  eruption(lat: number, lon: number, vei: number): void {
+    const A = this.area();
+    this.aerosol += 0.025 * Math.pow(4, vei - 6) * (5.1e14 / A);
+    this.gas.CO2 += 5e10 * Math.pow(10, vei - 6) * (vei >= 8 ? 20 : 1);
+    this.eruptions.push({ lat, lon, vei });
+    if (this.eruptions.length > 8) this.eruptions.shift();
+    const name = vei >= 8 ? 'A supervolcano' : vei >= 7 ? 'A colossal eruption' : vei >= 6 ? 'A major eruption' : 'An eruption';
+    this.onEvent?.(`${name} (VEI ${vei}) at ${(lat * 57.3).toFixed(0)}°, ${(lon * 57.3).toFixed(0)}°: sulfate haze will cool the climate for years.`, vei >= 7 ? 'warn' : 'info');
+    this.version++;
+  }
+
+  /**
+   * Evolution of life, paced like Earth's: microbes appear within a few hundred million years
+   * of stable liquid water (and make methane in oxygen-free air); oxygenic photosynthesis
+   * slowly oxygenates the air (a Great Oxidation Event); with enough oxygen for an ozone layer,
+   * plants colonize land (changing albedo and weathering); then complex animals — the
+   * precondition for intelligence. Long hostile spells cause extinctions.
+   */
+  private evolveLife(dt: number): void {
+    if (this.spinningUp || dt <= 0) return;
+    const yr = dt / YEAR;
+    const T = this.stats.meanT;
+    const pp = this.bulk?.pp ?? ({} as Record<string, number>);
+    const O2 = pp.O2 ?? 0;
+    const wet = this.vol.id === 'H2O' && this.oceanMass() > 0 && this.P > 1e3;
+    const ok = wet && T > 250 && T < 345;
+    const prev = this.lifeStage;
+    if (!ok) {
+      this.hostileYears += yr;
+      if (this.lifeStage > 0 && this.hostileYears > 2e5) {
+        // Extremophiles may hang on in a cold ocean under ice; heat and dryness sterilize.
+        this.lifeStage = wet && T <= 250 ? Math.min(this.lifeStage, 1) : 0;
+      }
+    } else {
+      this.hostileYears = 0;
+      const mean = [3e8, 6e8, 4e8, 3e8][this.lifeStage];
+      const ready = this.lifeStage === 2 ? O2 > 2e3 : this.lifeStage === 3 ? O2 > 1e4 && T > 265 && T < 320 : this.lifeStage < 4;
+      if (mean && ready) {
+        // Each world needs its own (seeded) time for each step of evolution: 0.5–1.5× the mean.
+        this.lifeProgress += yr;
+        const u = (((this.seed * 9301 + this.lifeStage * 49297 + 233) % 233280) + 233280) % 233280;
+        if (this.lifeProgress > mean * (0.5 + u / 233280)) {
+          this.lifeStage++;
+          this.lifeProgress = 0;
+        }
+      }
+      const A = this.area();
+      // Methanogens warm an anoxic world.
+      if (this.lifeStage >= 1 && O2 < 1e3) {
+        const target = this.partialToMass('CH4', 60 * Math.min(1, this.P / 1e5));
+        if (this.gas.CH4 < target) this.gas.CH4 += (target - this.gas.CH4) * (1 - Math.exp(-yr / 1e5));
+      }
+      // Net oxygen from photosynthesis and organic burial (~0.6 Gyr to fill an Earth-like sky).
+      if (this.lifeStage >= 2 && O2 < 0.28 * Math.max(this.P, 1)) {
+        const prod = 2e9 * yr * (A / 5.1e14);
+        this.gas.O2 += prod;
+        this.gas.CO2 = Math.max(0, this.gas.CO2 - Math.min(prod * (44 / 32), this.gas.CO2 * 0.3));
+      }
+    }
+    const want = this.lifeStage >= 3;
+    if (want !== this.biosphere) this.biosphere = want;
+    if (this.lifeStage !== prev) {
+      const msg = [
+        'All life has been extinguished.',
+        'Microbial life has appeared in the oceans!',
+        'Microbes have learned oxygenic photosynthesis — oxygen is starting to build up.',
+        'Plants have colonized the land, changing its colour and albedo.',
+        'Complex animals have evolved.',
+      ][this.lifeStage];
+      this.onEvent?.(this.lifeStage < prev ? (this.lifeStage === 0 ? msg : 'A mass extinction: only microbes survive.') : msg, this.lifeStage < prev ? 'danger' : 'info');
+    }
+  }
+
+  /** Whittaker-style biome of a cell (index into BIOMES). */
+  biomeAt(k: number): number {
+    if (this.ocean[k] > 0.5) return this.seaIce[k] > 0.5 ? 1 : 0;
+    const T = this.tAnnual[k] - 273.15;
+    const P = this.pAnnual[k] * DAY * 365.25;
+    if (this.snow[k] > 200 || T < -15) return 1;
+    if (this.lifeStage < 3) return 9;
+    if (T < -5) return 2;
+    if (T < 3) return 3;
+    if (P < 250) return 6;
+    if (T < 20) return P > 750 ? 4 : 5;
+    return P > 1500 ? 8 : P > 500 ? 7 : 6;
+  }
+
+  /** Random eruptions on geologically active worlds (only at time speeds where they matter). */
+  private randomEruptions(dt: number, ctx: ClimateContext): void {
+    if (!ctx.geology || this.spinningUp || dt > 50 * YEAR || ctx.geothermal < 0.03) return;
+    this.eruptClock += dt;
+    const activity = clamp(ctx.geothermal / 0.087, 0.3, 30);
+    // VEI ≥ 6 roughly every 80 years on Earth.
+    const rate = activity / (80 * YEAR);
+    if (Math.random() > 1 - Math.exp(-dt * rate)) return;
+    const r = Math.random();
+    const vei = r < 0.85 ? 6 : r < 0.985 ? 7 : 8;
+    // Prefer high, land cells (volcanic arcs and hotspots).
+    let best = 0,
+      bestK = 0;
+    for (let t = 0; t < 12; t++) {
+      const k = Math.floor(Math.random() * this.grid.N);
+      const s = this.elev[k] + (this.ocean[k] < 0.5 ? 2000 : 0) + Math.random() * 1500;
+      if (s > best) {
+        best = s;
+        bestK = k;
+      }
+    }
+    const j = Math.floor(bestK / this.grid.nLon);
+    this.eruption(this.grid.lat[j], this.grid.lon[bestK % this.grid.nLon], vei);
   }
 
   private updateClouds(P: number) {
@@ -1982,6 +2264,16 @@ export class TerrestrialClimate {
         return this.tAnnual;
       case 'frost':
         return this.frost;
+      case 'current': {
+        const out = new Float64Array(this.grid.N);
+        for (let k = 0; k < out.length; k++) out[k] = Math.hypot(this.uo[k], this.vo[k]);
+        return out;
+      }
+      case 'biome': {
+        const out = new Float64Array(this.grid.N);
+        for (let k = 0; k < out.length; k++) out[k] = this.biomeAt(k);
+        return out;
+      }
       case 'wind': {
         const out = new Float64Array(this.grid.N);
         for (let k = 0; k < out.length; k++) out[k] = Math.hypot(this.circ.u[k], this.circ.v[k]);
@@ -2019,7 +2311,7 @@ export class TerrestrialClimate {
   civStep(dt: number, ctx: ClimateContext): void {
     if (dt <= 0) return;
     const A = 4 * Math.PI * ctx.R * ctx.R;
-    if (!this.civ && this.biosphere && this.stats.humanHabitable > 0.08) {
+    if (!this.civ && this.lifeStage >= 4 && this.stats.humanHabitable > 0.08) {
       this.lifeClock += dt;
       // Intelligence emerges on long-habitable living worlds (rare per step, likely over ~100 Myr).
       const p = 1 - Math.exp(-dt / (1.5e8 * YEAR));
@@ -2109,14 +2401,20 @@ export class TerrestrialClimate {
       history: this.history.toJSON(),
       civ: this.civ ? this.civ.serialize() : null,
       lifeClock: this.lifeClock,
+      lifeStage: this.lifeStage,
+      lifeProgress: this.lifeProgress,
+      driftMyr: this.driftMyr,
+      driftApplied: this.driftApplied,
     };
   }
 
   restore(o: any): void {
     if (!o) return;
     if (o.res && o.res !== this.res) this.setResolution(o.res);
-    if (o.craters?.length) {
-      this.craters = o.craters;
+    this.driftMyr = o.driftMyr ?? 0;
+    this.driftApplied = o.driftApplied ?? 0;
+    if (o.craters?.length || this.driftApplied > 0) {
+      this.craters = o.craters ?? [];
       this.loadTerrain(this.style, this.seed);
       this.computeCellTerrain();
     }
@@ -2143,6 +2441,8 @@ export class TerrestrialClimate {
     this.tCold.set(this.tAnnual);
     this.history = History.from(o.history);
     this.lifeClock = o.lifeClock ?? 0;
+    this.lifeStage = o.lifeStage ?? (this.biosphere ? 4 : 0);
+    this.lifeProgress = o.lifeProgress ?? 0;
     if (o.civ) {
       this.civ = new Civilization(this.grid, 'preindustrial', 0, this.seed);
       this.civ.onEvent = (m, k) => this.onEvent?.(m, k);
