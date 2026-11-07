@@ -45,6 +45,7 @@ export function serializeSim(sim: Simulation): string {
     focusId: sim.focusId,
     scenarioId: sim.scenarioId,
     settings: sim.settings,
+    agency: sim.agency.serialize(),
     bodies,
   });
 }
@@ -98,6 +99,7 @@ export function loadSim(sim: Simulation, json: string): void {
     if (saved && b.climate instanceof TerrestrialClimate) b.climate.restore(saved);
     if (saved && b.climate instanceof GasGiantClimate) b.climate.restore(saved);
   }
+  sim.agency.restore(o.agency);
   sim.events.emit('reset', undefined);
 }
 

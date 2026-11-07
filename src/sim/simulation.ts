@@ -15,6 +15,7 @@ import type { Illuminator } from '../climate/insolation';
 import { TerrestrialClimate, type ClimateResolution } from '../climate/terrestrial';
 import { craterScaling } from '../climate/terrain';
 import { refreshStar } from './factory';
+import { CivAgency } from './civilizations';
 import type { Scenario } from './scenarios';
 
 export type PhysicsMode = 'nbody' | 'kepler';
@@ -68,6 +69,8 @@ export class Simulation {
     climateBudgetMs: 6,
   };
   events = new Emitter<SimEvents>();
+  /** Terraforming projects and interstellar voyages of advanced civilizations. */
+  agency = new CivAgency(this);
   private nbody = new NBody();
   private kepler = new KeplerSystem();
   private keplerDirty = true;
@@ -86,6 +89,7 @@ export class Simulation {
     this.pending.clear();
     this.flags.clear();
     this.time = 0;
+    this.agency.reset();
     this.epochMs = sc.epochMs;
     this.speed = sc.speed;
     this.scenarioId = sc.id;
@@ -289,6 +293,7 @@ export class Simulation {
     this.checkRoche();
     for (const b of this.bodies) b.age += done;
     this.stepClimates(done, rdt);
+    if (this.settings.civilizations) this.agency.update(done);
   }
 
   private budgetSteps(): number {
@@ -822,25 +827,6 @@ export class Simulation {
   }
 
   /** Advance climate models within a per-frame CPU budget (focused world first). */
-  /** Spacefaring civilizations settle other habitable worlds of their system. */
-  private colonize(home: Body, c: TerrestrialClimate, dt: number): void {
-    if (Math.random() > 1 - Math.exp(-dt / (300 * YEAR))) return;
-    const star = (x: Body | null): Body | null => {
-      for (let n = 0; x && n < 6; x = this.primaryOf(x), n++) if (x.star) return x;
-      return null;
-    };
-    const sun = star(home);
-    const targets = this.bodies.filter((b) => b !== home && b.climate instanceof TerrestrialClimate && !b.climate.civ && star(b) === sun && b.climate.stats.meanT > 250 && b.climate.stats.meanT < 320 && b.climate.P > 5e3);
-    if (!targets.length) return;
-    const t = targets[Math.floor(Math.random() * targets.length)];
-    const tc = t.climate as TerrestrialClimate;
-    tc.seedCivilization('emergent');
-    tc.civ!.tech = 2.05;
-    tc.civ!.name = `Colony of ${home.name}`;
-    tc.civ!.seedPopulation = 1e6;
-    this.notify(`Colonists from ${home.name} have settled ${t.name}!`, 'success', t.id);
-  }
-
   private stepClimates(dt: number, realDt: number): void {
     const t0 = performance.now();
     const climateBodies = this.bodies.filter((b) => b.climate);
@@ -876,7 +862,7 @@ export class Simulation {
         if (this.settings.civilizations) c.civStep(pend, ctx);
         for (const e of c.eruptions) this.events.emit('eruption', { body: b, ...e });
         c.eruptions.length = 0;
-        if (c.civ && c.civ.era === 'clean' && c.civ.tech > 2.1 && this.settings.civilizations) this.colonize(b, c, pend);
+        if (c.civ && this.settings.civilizations) this.agency.act(b, c, pend);
       } else if (c instanceof GasGiantClimate) {
         c.step(pend, this.giantContext(b, il, isFocus ? realDt : realDt * 4));
       }

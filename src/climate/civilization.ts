@@ -65,6 +65,10 @@ export class Civilization {
   carbonTax = false;
   /** Policy: stratospheric sulfate injection maintained by the civilization (optical depth). */
   geoengineering = 0;
+  /** Adopt climate policies on its own as warming grows (realistic politics). */
+  autoPolicy = true;
+  /** Mean temperature when the civilization was founded (warming reference, K). */
+  baseT = 0;
   /** Soot from a nuclear war, handed to the climate on the next step. */
   private soot = 0;
   private rng: Rng;
@@ -169,7 +173,7 @@ export class Civilization {
     // Technology advances with population; crises set it back.
     const stress = kSum > 0 ? clamp(total / kSum - 1, 0, 1) : 1;
     if (this.era !== 'collapsed') {
-      const rate = this.tech < 1 ? 2e-4 * Math.log10(1 + total / 1e6) : this.tech < 2 ? 3e-3 * (this.carbonTax ? 2.5 : 1) : 4e-4;
+      const rate = this.tech < 1 ? 2e-4 * Math.log10(1 + total / 1e6) : this.tech < 2 ? 3e-3 * (this.carbonTax ? 2.5 : 1) : this.tech < 3 ? 4e-4 : 0;
       this.tech += rate * yr * (1 - stress);
     }
     const prevEra = this.era;
@@ -260,6 +264,8 @@ export class Civilization {
       milestones: [...this.milestones],
       carbonTax: this.carbonTax,
       geoengineering: this.geoengineering,
+      autoPolicy: this.autoPolicy,
+      baseT: this.baseT,
     };
   }
 
@@ -277,6 +283,8 @@ export class Civilization {
     for (const m of o.milestones ?? []) this.milestones.add(m);
     this.carbonTax = !!o.carbonTax;
     this.geoengineering = o.geoengineering ?? 0;
+    this.autoPolicy = o.autoPolicy ?? true;
+    this.baseT = o.baseT ?? 0;
   }
 
   void(): void {

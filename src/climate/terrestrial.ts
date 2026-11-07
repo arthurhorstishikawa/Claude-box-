@@ -1870,14 +1870,14 @@ export class TerrestrialClimate {
    * 6 = Pinatubo, 7 = Tambora, 8 = a supervolcano). Sulfate aerosols cool the planet for a few
    * years; the CO₂ (large only for huge eruptions) warms it slowly.
    */
-  eruption(lat: number, lon: number, vei: number): void {
+  eruption(lat: number, lon: number, vei: number, quiet = false): void {
     const A = this.area();
     this.aerosol += 0.025 * Math.pow(4, vei - 6) * (5.1e14 / A);
     this.gas.CO2 += 5e10 * Math.pow(10, vei - 6) * (vei >= 8 ? 20 : 1);
     this.eruptions.push({ lat, lon, vei });
     if (this.eruptions.length > 8) this.eruptions.shift();
     const name = vei >= 8 ? 'A supervolcano' : vei >= 7 ? 'A colossal eruption' : vei >= 6 ? 'A major eruption' : 'An eruption';
-    this.onEvent?.(`${name} (VEI ${vei}) at ${(lat * 57.3).toFixed(0)}°, ${(lon * 57.3).toFixed(0)}°: sulfate haze will cool the climate for years.`, vei >= 7 ? 'warn' : 'info');
+    if (!quiet) this.onEvent?.(`${name} (VEI ${vei}) at ${(lat * 57.3).toFixed(0)}°, ${(lon * 57.3).toFixed(0)}°: sulfate haze will cool the climate for years.`, vei >= 7 ? 'warn' : 'info');
     this.version++;
   }
 
@@ -1981,7 +1981,8 @@ export class TerrestrialClimate {
       }
     }
     const j = Math.floor(bestK / this.grid.nLon);
-    this.eruption(this.grid.lat[j], this.grid.lon[bestK % this.grid.nLon], vei);
+    // Routine (VEI 6) eruptions are only news at slow time speeds.
+    this.eruption(this.grid.lat[j], this.grid.lon[bestK % this.grid.nLon], vei, vei < 7 && dt > 0.05 * YEAR);
   }
 
   private updateClouds(P: number) {
@@ -2088,7 +2089,8 @@ export class TerrestrialClimate {
     const oceanMass = this.oceanMass();
     const Te = Math.pow(asr / SIGMA, 0.25);
     const runaway = this.vol.id === 'H2O' && this.waterTotal > 0 && (vap * A > 0.3 * this.waterTotal || mT > 450);
-    const snowball = ice > 0.93 && oc > 0.3;
+    // Hysteresis: a snowball must clearly thaw before it counts as thawed.
+    const snowball = oc > 0.3 && (this.flags.snowball ? ice > 0.85 : ice > 0.93);
     const pp: Record<string, number> = { ...bulk.pp };
     pp[this.vol.id === 'H2O' ? 'H2O' : 'CH4v'] = vap * this.g;
     this.stats = {
@@ -2420,6 +2422,21 @@ export class TerrestrialClimate {
       this.gas.CO2 += lost * A * 12 * (44 / 12);
     }
     this.bulk = bulkFromMasses(this.gas, ctx.R, ctx.g);
+    // Realistic politics: warming eventually brings a carbon price, and if it gets bad enough,
+    // stratospheric geoengineering (both can be overridden in the Life tab).
+    if (civ.autoPolicy && civ.era === 'industrial') {
+      if (civ.baseT === 0) civ.baseT = this.stats.meanT;
+      const warming = this.stats.meanT - civ.baseT;
+      const yr = dt / YEAR;
+      if (!civ.carbonTax && warming > 1.5 && Math.random() < 1 - Math.exp(-yr / 15)) {
+        civ.carbonTax = true;
+        this.onEvent?.(`After ${warming.toFixed(1)} °C of warming, the civilization has adopted a carbon tax.`, 'info');
+      }
+      if (civ.geoengineering === 0 && warming > 3 && civ.tech > 1.6 && Math.random() < 1 - Math.exp(-yr / 20)) {
+        civ.geoengineering = 0.04;
+        this.onEvent?.(`At ${warming.toFixed(1)} °C of warming, the civilization has started spraying sulfate aerosols into the stratosphere.`, 'warn');
+      }
+    }
     // Keep the reported vegetation cover in step with land clearing.
     let veg = 0;
     for (let k = 0; k < this.grid.N; k++) veg += this.veg[k] * (1 - this.ocean[k]) * this.grid.cellArea[Math.floor(k / this.grid.nLon)];

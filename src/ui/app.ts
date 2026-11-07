@@ -967,8 +967,22 @@ export class App {
         ['Technology', civ.tech.toFixed(2)],
         ['Carbon tax', civ.carbonTax ? 'yes' : 'no'],
         ['Geoengineering', civ.geoengineering > 0 ? `aerosol τ ${civ.geoengineering.toFixed(3)}` : 'none'],
+        ['Stage', civ.era === 'collapsed' ? 'collapsed' : civ.tech >= 2.45 ? 'interstellar' : civ.tech >= 2.1 ? 'spacefaring' : civ.tech >= 2 ? 'post-carbon' : civ.tech >= 1 ? 'industrial' : 'agrarian'],
       ]),
     );
+    // Terraforming projects and colony ships of this world.
+    const ag = this.sim.agency;
+    const mine = ag.projects.filter((p) => p.by === b.id);
+    const ships = ag.voyages.filter((v) => v.from === b.id);
+    const onMe = ag.projects.find((p) => p.target === b.id);
+    if (mine.length || ships.length || onMe) {
+      el.appendChild(section('Projects'));
+      const rows: [string, string][] = [];
+      for (const p of mine) rows.push(['Terraforming', `${this.sim.getBody(p.target)?.name ?? '?'} (for ${fmtDuration(this.sim.time - p.started)})`]);
+      if (onMe) rows.push(['Being terraformed by', onMe.owner === 'Global civilization' ? this.sim.getBody(onMe.by)?.name ?? onMe.owner : onMe.owner]);
+      for (const v of ships) rows.push(['Colony ship', `to ${this.sim.getBody(v.toStar)?.name ?? '?'}, arrives in ${fmtDuration(Math.max(0, v.arrive - this.sim.time))}`]);
+      el.appendChild(kv(rows));
+    }
   }
 
   private lifeControls(body: HTMLElement, b: Body): void {
@@ -999,6 +1013,10 @@ export class App {
         this.toast(tax.checked ? 'Carbon tax: fossil emissions drop and clean energy arrives sooner.' : 'Carbon tax repealed.', 'info', b.id);
       });
       body.appendChild(h('label', { class: 'row', style: 'cursor:pointer;margin:4px 0' }, tax, 'Carbon tax'));
+      const auto = h('input', { type: 'checkbox' }) as HTMLInputElement;
+      auto.checked = civ.autoPolicy;
+      auto.addEventListener('change', () => (civ.autoPolicy = auto.checked));
+      body.appendChild(h('label', { class: 'row', style: 'cursor:pointer;margin:4px 0', title: 'The civilization reacts to warming by itself: a carbon tax after ~1.5 °C, geoengineering after ~3 °C' }, auto, 'Decides its own climate policy'));
       body.appendChild(
         slider('Geoengineering (stratospheric sulfate)', {
           min: 0,
@@ -1215,6 +1233,12 @@ export class App {
         slider('Number of planets', { min: -1, max: 12, step: 1, value: o.planets, fmt: (v) => (v < 0 ? 'natural (3–9)' : v === 0 ? 'none — start empty' : String(v)), onInput: (v) => (o.planets = v) }),
         h('div', { class: 'row wrap', style: 'gap:14px;margin:6px 0' }, chk('Guarantee a habitable world', 'habitable', 'Places a temperate, watery world where its star makes it possible'), chk('Life', 'life'), chk('Moons', 'moons'), chk('Asteroid belt', 'belt')),
         h('div', { class: 'row', style: 'margin:6px 0' }, civ),
+        (() => {
+          const el = h('input', { type: 'checkbox' }) as HTMLInputElement;
+          el.checked = (o.secondLy ?? 0) > 0;
+          el.addEventListener('change', () => (o.secondLy = el.checked ? 0.5 : 0));
+          return h('label', { class: 'row', style: 'cursor:pointer;margin:6px 0', title: 'Another star with its own planets, half a light-year away — a destination for colony ships' }, el, 'Add a second star system 0.5 light-years away');
+        })(),
         h('div', { class: 'row', style: 'margin:10px 0 4px' }, h('span', { class: 'muted' }, 'Seed'), seedIn, h('button', { onclick: () => { o.seed = Math.floor(Math.random() * 1e6); seedIn.value = String(o.seed); } }, '🎲')),
         h('div', { class: 'row', style: 'margin-top:12px;justify-content:flex-end' }, h('button', { onclick: () => go(0) }, 'Just the star'), h('button', { class: 'primary', onclick: () => go() }, 'Generate system')),
       ),

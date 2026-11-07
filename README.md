@@ -35,6 +35,12 @@ civilization industrialize — and watch the climate respond.
   (tundra, boreal and temperate forest, grassland, desert, savanna, rainforest) are mapped from
   the climate. Civilizations can adopt a carbon tax, geoengineer the stratosphere, wage nuclear
   war (nuclear winter), and settle other worlds of their system once they are spacefaring.
+- **Civilizations with agency**: they react to their own warming (a carbon tax, then
+  geoengineering), go carbon-free, shade or warm their home world as their star changes,
+  terraform the best neighbouring planet (thicker air, greenhouse gases or sunshades, comet
+  water, oxygen, life) and settle it, evacuate a dying home world, and finally send colony
+  ships at 3% of light speed to other star systems — tick *Add a second star system* in
+  ✨ Create, or load the *Reaching the stars* scenario.
 - **Stars that live**: red dwarfs flare (rare superflares slowly erode close-in atmospheres).
 - **Impacts** release energy, heat the atmosphere, loft dust (impact winter) and **carve
   craters** into the procedural terrain.

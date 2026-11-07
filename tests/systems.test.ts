@@ -118,3 +118,18 @@ describe('random planet generator', () => {
       }
   });
 });
+
+describe('advanced civilizations', () => {
+  it('adopt climate policy, terraform a neighbour and send a colony ship to another star', () => {
+    const sim = new Simulation();
+    sim.loadScenario(findScenario('neighbors'));
+    expect(sim.bodies.filter((b) => b.star).length).toBe(2);
+    const msgs: string[] = [];
+    sim.events.on('notify', (n) => msgs.push(n.msg));
+    sim.speed = 100 * YEAR;
+    for (let i = 0; i < 30 * 16 && !msgs.some((m) => /colony ship/.test(m)); i++) sim.update(1 / 30);
+    expect(msgs.some((m) => /carbon-free/.test(m))).toBe(true);
+    expect(msgs.some((m) => /begun terraforming/.test(m))).toBe(true);
+    expect(msgs.some((m) => /launched a colony ship/.test(m))).toBe(true);
+  });
+});

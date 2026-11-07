@@ -47,6 +47,8 @@ export interface SystemOptions {
   civilization: 'none' | 'preindustrial' | 'modern';
   moons: boolean;
   belt: boolean;
+  /** Add a second, independent star system this far away (light-years); 0 = none. */
+  secondLy?: number;
 }
 
 export interface GeneratedSystem {
@@ -93,8 +95,8 @@ function teq(L: number, a: number): number {
 
 const logRange = (rng: Rng, a: number, b: number) => Math.exp(rng.range(Math.log(a), Math.log(b)));
 
-export function generateSystem(o: SystemOptions): GeneratedSystem {
-  resetBodyIds(1);
+export function generateSystem(o: SystemOptions, resetIds = true): GeneratedSystem {
+  if (resetIds) resetBodyIds(1);
   const rng = new Rng(o.seed * 2654435761 + 17);
   const preset = o.star === 'random' ? pickPreset(rng) : o.star;
   const p = STAR_PRESETS.find((x) => x.id === preset)!;
@@ -491,6 +493,30 @@ export function systemScenario(o: SystemOptions): Scenario & { summary: string }
     speed: 86400,
     build: () => {
       const g = generateSystem(o);
+      if (o.secondLy && o.secondLy > 0) {
+        // A neighbouring system on a wide mutual orbit (both systems keep their own planets).
+        const rng = new Rng(o.seed * 7 + 3);
+        const g2 = generateSystem({ ...o, seed: o.seed * 31 + 7, star: 'random', planets: -1, habitable: rng.chance(0.6), civilization: 'none', secondLy: 0 }, false);
+        const d = o.secondLy * 9.4607e15;
+        const ang = rng.range(0, 2 * Math.PI);
+        const M1 = g.bodies.reduce((s, b) => s + b.mass, 0);
+        const M2 = g2.bodies.reduce((s, b) => s + b.mass, 0);
+        const vRel = Math.sqrt((G * (M1 + M2)) / d);
+        const ux = Math.cos(ang),
+          uy = Math.sin(ang);
+        for (const b of g2.bodies) {
+          b.pos.x += ux * d;
+          b.pos.y += uy * d;
+          b.vel.x += -uy * vRel * (M1 / (M1 + M2));
+          b.vel.y += ux * vRel * (M1 / (M1 + M2));
+        }
+        for (const b of g.bodies) {
+          b.vel.x -= -uy * vRel * (M2 / (M1 + M2));
+          b.vel.y -= ux * vRel * (M2 / (M1 + M2));
+        }
+        g.bodies.push(...g2.bodies);
+        g.summary += ` A second system, ${g2.name}, lies ${o.secondLy} light-years away.`;
+      }
       sc.focus = g.focus;
       sc.name = g.name;
       sc.summary = g.summary;

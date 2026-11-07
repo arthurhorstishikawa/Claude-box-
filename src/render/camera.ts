@@ -74,7 +74,7 @@ export class CameraController {
     const f = Math.exp(clamp(delta, -400, 400) * 0.0012);
     const b = this.target;
     if (this.mode === 'orbit') {
-      this.dist = clamp(this.dist * f, this.minDistance(), 5e15);
+      this.dist = clamp(this.dist * f, this.minDistance(), 5e17);
       if (b && !b.isStarLike && b.kind !== 'smallBody' && this.dist < b.radius * 1.035 && f < 1) this.enterSurface();
     } else if (b) {
       const ground = this.groundAt(b);
@@ -115,7 +115,7 @@ export class CameraController {
     const b = this.target;
     if (!b) return;
     this.mode = 'orbit';
-    this.dist = clamp(b.radius + this.alt, this.minDistance(), 5e15);
+    this.dist = clamp(b.radius + this.alt, this.minDistance(), 5e17);
     // Keep looking at the same side of the planet.
     const rel = V3.sub(this.pos, b.pos).normalize();
     const r = toThree(rel);

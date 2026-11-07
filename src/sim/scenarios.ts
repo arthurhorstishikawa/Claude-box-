@@ -3,6 +3,7 @@ import { V3 } from '../core/vec3';
 import { Body, resetBodyIds } from '../physics/body';
 import { eclipticFromRaDec, frameFromPole, makeGiant, makeRocky, makeSmallBody, makeStar, placeOnOrbit, setObliquity } from './factory';
 import { habitableZone } from '../stars/habitableZone';
+import { systemScenario } from './generator';
 
 export interface Scenario {
   id: string;
@@ -402,6 +403,26 @@ export const SCENARIOS: Scenario[] = [
   { id: 'ember', name: 'Brown dwarf habitable zone', description: 'Hearth orbits a 65-Jupiter-mass brown dwarf every few days. Brown dwarfs cool forever: speed time up and watch the habitable zone slide inward and the world freeze.', epochMs: null, focus: 'Hearth', speed: 3 * 3600, build: buildEmber },
   { id: 'empty', name: 'Empty system', description: 'Just a Sun-like star. Build your own system with the toolbox.', epochMs: null, focus: 'Sun', speed: DAY, build: buildEmpty },
 ];
+
+/** A modern civilization with a neighbouring star system within reach of colony ships. */
+function neighborsScenario(): Scenario {
+  const base = systemScenario({ seed: 2026, star: 'G', planets: 6, habitable: true, life: true, civilization: 'modern', moons: true, belt: false, secondLy: 0.5 });
+  return {
+    id: 'neighbors',
+    name: 'Reaching the stars',
+    description: 'An Earth-like world with a modern civilization, and another star system half a light-year away. Speed time up: the civilization faces its warming, goes carbon-free, terraforms a neighbouring planet and sends colony ships to the other star.',
+    epochMs: null,
+    get focus() {
+      return base.focus;
+    },
+    get speed() {
+      return base.speed;
+    },
+    build: () => base.build(),
+    afterLoad: (sim) => base.afterLoad?.(sim),
+  };
+}
+SCENARIOS.splice(SCENARIOS.length - 1, 0, neighborsScenario());
 
 export function findScenario(id: string): Scenario {
   return SCENARIOS.find((s) => s.id === id) ?? SCENARIOS[0];

@@ -240,6 +240,7 @@ export class Renderer {
     this.updateOrbits(camPos);
     this.updateMarkers(camPos);
     this.updateHZ(camPos, lights);
+    this.updateVoyages(camPos);
     this.updateEffects(camPos, dt);
     const fv = focus ? this.views.get(focus.id) : null;
     this.wind.update(fv instanceof RockyView && view.wind ? fv : null, focus, camPos, dt, this.realTime);
@@ -398,6 +399,45 @@ export class Renderer {
       el.style.transform = `translate(${x + Math.min(pxR, 200) * 0.7 + 8}px, ${y - 8}px)`;
       el.classList.toggle('focus', important);
     }
+  }
+
+  // ------------------------------------------------------------------ colony ships
+
+  private voyageGroup: THREE.Group | null = null;
+  private updateVoyages(camPos: V3): void {
+    if (!this.voyageGroup) {
+      this.voyageGroup = new THREE.Group();
+      this.overlay.add(this.voyageGroup);
+    }
+    const g = this.voyageGroup;
+    const vs = this.sim.agency.voyages;
+    while (g.children.length > vs.length * 2) {
+      const o = g.children[g.children.length - 1] as THREE.Mesh;
+      g.remove(o);
+      o.geometry.dispose();
+    }
+    vs.forEach((v, i) => {
+      const to = this.sim.getBody(v.toStar);
+      if (!to) return;
+      let line = g.children[2 * i] as THREE.Line | undefined;
+      let ship = g.children[2 * i + 1] as THREE.Points | undefined;
+      if (!line || !ship) {
+        line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineDashedMaterial({ color: 0x8fd8ff, dashSize: 1, gapSize: 1, transparent: true, opacity: 0.45, depthWrite: false }));
+        ship = new THREE.Points(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3()]), new THREE.PointsMaterial({ color: 0xbfeaff, size: 7, sizeAttenuation: false, depthWrite: false, transparent: true }));
+        line.frustumCulled = ship.frustumCulled = false;
+        g.add(line, ship);
+      }
+      const f = clamp((this.sim.time - v.depart) / Math.max(v.arrive - v.depart, 1), 0, 1);
+      const o = new V3(v.origin.x, v.origin.y, v.origin.z);
+      const p = o.clone().addScaled(V3.sub(to.pos, o), f);
+      const pts = [rel(o, camPos), rel(to.pos, camPos)];
+      (line.geometry as THREE.BufferGeometry).setFromPoints(pts);
+      line.computeLineDistances();
+      const len = pts[0].distanceTo(pts[1]);
+      (line.material as THREE.LineDashedMaterial).dashSize = len / 60;
+      (line.material as THREE.LineDashedMaterial).gapSize = len / 60;
+      (ship.geometry as THREE.BufferGeometry).setFromPoints([rel(p, camPos)]);
+    });
   }
 
   // ------------------------------------------------------------------ habitable zones
