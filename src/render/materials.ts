@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { getCloudNoise } from './textures';
 import { COLORMAP_GLSL, COVER_GLSL, EQUIRECT_GLSL, LOGDEPTH_F, LOGDEPTH_PARS_F, LOGDEPTH_PARS_V, LOGDEPTH_V, NOISE_GLSL, SCATTER_GLSL } from './glsl';
 
 const v3 = (r = 0, g = 0, b = 0) => new THREE.Vector3(r, g, b);
@@ -428,6 +429,9 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
   return new THREE.ShaderMaterial({
     uniforms: {
       uNoise: { value: noise3d },
+      uShape: { value: getCloudNoise().shape },
+      uDetail: { value: getCloudNoise().detail },
+      uShapeStats: { value: new THREE.Vector2(getCloudNoise().mu, getCloudNoise().sd) },
       uClimB: { value: null },
       uBands: { value: null },
       uGiant: { value: 0 },
@@ -460,13 +464,45 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
       ${SCATTER_GLSL}
       ${COVER_GLSL}
       uniform vec3 uPlanetCenter;
-      uniform sampler3D uNoise;
+      uniform sampler3D uNoise, uShape, uDetail;
+      uniform vec2 uShapeStats;
       uniform sampler2D uClimB, uBands;
       uniform int uGiant;
       uniform mat3 uBodyRot; // render → body frame
       uniform float uShellIn, uShellOut, uScale, uDensity, uTime, uOpacity;
       uniform vec3 uCloudColor, uDeepColor, uAmbient;
       varying vec3 vWorld;
+      bool uDetailOn = true;
+      float remap(float v, float a, float b, float c, float d){ return c + (clamp(v, a, b) - a) / max(b - a, 1e-5) * (d - c); }
+      // Terrestrial clouds: billowy Perlin–Worley shapes, eroded by finer Worley detail, shaped
+      // by height (flat bases, rounded tops). Wet, convective regions grow tall cumulus towers;
+      // drier ones get low, flat stratocumulus. Coverage follows the climate model.
+      float cloudDensity(vec3 pc, float r, float h, vec3 db, bool detail){
+        vec2 cb = sampleEqLod0(uClimB, db).rg;
+        float cov = cb.r;
+        if (cov < 0.01) return 0.0;
+        float conv = smoothstep(1.5, 8.0, cb.g);
+        // Height profile: cumulus (tall, rounded top) vs stratocumulus (thin layer).
+        float topCu = mix(0.45, 0.98, conv * smoothstep(0.2, 0.7, cov));
+        float gCu = smoothstep(0.0, 0.07, h) * (1.0 - smoothstep(topCu * 0.55, topCu, h));
+        float gSt = smoothstep(0.0, 0.04, h) * (1.0 - smoothstep(0.18, 0.3, h));
+        float grad = mix(gSt, gCu, 0.25 + 0.75 * conv);
+        if (grad <= 0.0) return 0.0;
+        vec3 q = pc * uScale * 0.55 + vec3(uTime * 0.0012, 0.0, uTime * 0.0007);
+        vec4 sn = texture(uShape, q);
+        float wf = dot(sn.gba, vec3(0.625, 0.25, 0.125));
+        float base = remap(sn.r, wf - 1.0, 1.0, 0.0, 1.0);
+        // Coverage threshold from the measured distribution of the base shape.
+        float thr = coverThreshold(cov, uShapeStats.x, uShapeStats.y);
+        // Rounder towers: the threshold rises with height inside each cloud.
+        float d = remap(base * mix(1.0, grad, 0.6), thr + 0.1 * h, 1.0, 0.0, 1.0) * grad;
+        if (d <= 0.0 || !detail) return d;
+        // Erode the edges with fine wispy detail (billows at the base, wisps at the top).
+        vec3 dn = texture(uDetail, q * 5.3 + vec3(0.0, uTime * 0.004, 0.0)).rgb;
+        float df = dot(dn, vec3(0.625, 0.25, 0.125));
+        df = mix(df, 1.0 - df, smoothstep(0.1, 0.6, h));
+        return remap(d, df * 0.32, 1.0, 0.0, 1.0);
+      }
       float density(vec3 pc){
         float r = length(pc);
         float h = (r - uShellIn) / (uShellOut - uShellIn);
@@ -489,11 +525,7 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
           float thr = coverThreshold(cov, 0.316, 0.113);
           return deck * smoothstep(thr - 0.03, thr + 0.05, n);
         }
-        float cov = sampleEqLod0(uClimB, db).r;
-        float prof = smoothstep(0.0, 0.12, h) * (1.0 - smoothstep(0.35 + 0.6 * cov, 0.95, h));
-        // The 3D noise sum has mean 0.316 and s.d. 0.113 (measured): cover matches the model.
-        float thr = coverThreshold(cov, 0.316, 0.113);
-        return prof * smoothstep(thr - 0.02, thr + 0.06, n);
+        return cloudDensity(pc, r, h, db, uDetailOn);
       }
       void main(){
         vec3 rd = normalize(vWorld);
@@ -535,6 +567,7 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
         }
         vec3 acc = vec3(0.0);
         float T = 1.0;
+        float tFirst = -1.0;
         float ls = (uShellOut - uShellIn) * 0.1;
         for (int i = 0; i < STEPS; i++) {
           // Quadratic step distribution: fine detail close to the camera, coarse far away.
@@ -546,19 +579,35 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
           if (dn > 0.001) {
             float ext = dn * uDensity;
             vec3 Lsum = vec3(0.0);
+            float hh = clamp((length(p) - uShellIn) / (uShellOut - uShellIn), 0.0, 1.0);
             for (int s = 0; s < 2; s++) {
               if (s >= uNumSuns) break;
               vec3 Ld = uSunDir[s];
+              // Light march toward the star with growing steps (no erosion detail: cheaper).
               float od = 0.0;
-              for (int k = 1; k <= 3; k++) od += density(p + Ld * ls * float(k)) * uDensity * ls;
+              float st = ls * 0.5;
+              uDetailOn = false;
+              for (int k = 0; k < 4; k++) {
+                od += density(p + Ld * st * (float(k) + 0.5) * float(k + 1)) * uDensity * st * float(k + 1);
+              }
+              uDetailOn = true;
               float mu = dot(rd, Ld);
-              float phase = 0.6 * phaseM(mu, 0.6) * 4.0 * PI + 0.4;
+              // Dual-lobe phase: a bright forward lobe (silver linings) plus some back-scatter.
+              float phase = (uGiant == 1) ? 0.6 * phaseM(mu, 0.6) * 4.0 * PI + 0.4 : (0.7 * phaseM(mu, 0.8) + 0.3 * phaseM(mu, -0.25)) * 4.0 * PI * 0.8 + 0.25;
               // Beer + powder-like multiple-scattering term; planet shadow via the light path.
               float lit = smoothstep(-0.08, 0.06, dot(normalize(p), Ld));
               // Beer + multiple-scattering tail: light diffuses through thick cloud (grey bases).
               Lsum += sunRad[s] * lit * max(exp(-od) + 0.3 * exp(-od * 0.25), 0.55 / (1.0 + 0.3 * od)) * phase;
             }
-            float depthDark = uGiant == 1 ? mix(0.12, 1.0, smoothstep(0.0, 0.85, (length(p) - uShellIn) / (uShellOut - uShellIn))) : 1.0;
+            // Giants: deeper decks are darker. Rocky: "powder" darkening of dense cloud cores
+            // (light scatters out of thin edges, into the eye from the sun side) and blue
+            // skylight from above, so undersides and inner folds are darker.
+            float depthDark = uGiant == 1 ? mix(0.12, 1.0, smoothstep(0.0, 0.85, hh)) : (1.0 - 0.45 * exp(-dn * 6.0)) ;
+            if (uGiant == 0) {
+              vec3 sky = vec3(0.0);
+              for (int s = 0; s < 2; s++) { if (s >= uNumSuns) break; sky += sunRad[s] * max(dot(normalize(p), uSunDir[s]) + 0.15, 0.0); }
+              Lsum += sky * vec3(0.32, 0.4, 0.55) * mix(0.35, 1.0, hh);
+            }
             vec3 cc = uCloudColor;
             if (uGiant == 1) {
               vec3 db = uBodyRot * normalize(p);
@@ -566,6 +615,7 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
             }
             vec3 c = (Lsum + uAmbient) * cc * depthDark;
             float a = 1.0 - exp(-ext * ds);
+            if (tFirst < 0.0 && a > 0.02) tFirst = t0 + am * am * L;
             acc += T * a * c;
             T *= 1.0 - a;
             if (T < 0.02) break;
@@ -583,6 +633,12 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
         }
         float alpha = (1.0 - T) * uOpacity;
         if (alpha < 0.002) discard;
+        if (uGiant == 0 && tFirst > 0.0) {
+          // Distant clouds fade into the sky: light lost and gained on the way to the eye.
+          vec3 trA;
+          vec3 ins = atmosphere(ro, rd, tFirst, trA);
+          acc = acc * trA + ins * (1.0 - T);
+        }
         gl_FragColor = vec4(acc * uOpacity, alpha);
         ${LOGDEPTH_F}
       }`,

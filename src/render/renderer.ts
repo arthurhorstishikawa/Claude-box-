@@ -236,7 +236,7 @@ export class Renderer {
     this.cam.camera.near = clamp(near * 0.3, 0.2, 1e7);
     this.cam.camera.far = 1e21;
     this.cam.camera.updateProjectionMatrix();
-    this.starfield.update(this.eye.exposure, this.renderer.getPixelRatio(), this.canvas.clientHeight, this.cam.camera);
+    this.starfield.update(this.eye.exposure, this.renderer.getPixelRatio(), this.canvas.clientHeight, this.cam.camera, this.eye.starExposure);
     this.updateOrbits(camPos);
     this.updateMarkers(camPos);
     this.updateHZ(camPos, lights);

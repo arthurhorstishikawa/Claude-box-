@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { YEAR } from '../src/core/constants';
+import { AU, G, YEAR } from '../src/core/constants';
+import { V3 } from '../src/core/vec3';
+import { orbitFromState } from '../src/physics/orbits';
 import { generateTerrain } from '../src/climate/terrain';
 import { TerrestrialClimate } from '../src/climate/terrestrial';
 import { findScenario } from '../src/sim/scenarios';
@@ -72,3 +74,25 @@ describe('new world dynamics', () => {
   });
 });
 void TerrestrialClimate;
+
+describe('extreme time warp', () => {
+  it('lets the Sun die without flinging planets out or spamming alerts', () => {
+    const sim = new Simulation();
+    sim.loadScenario(findScenario('earthmoon'));
+    const msgs: string[] = [];
+    sim.events.on('notify', (n) => msgs.push(n.msg));
+    sim.speed = 1e9 * YEAR;
+    for (let i = 0; i < 400 && sim.time < 1.05e10 * YEAR; i++) sim.update(1 / 30);
+    const sun = sim.bodies.find((b) => b.name === 'Sun')!;
+    const earth = sim.bodies.find((b) => b.name === 'Earth');
+    expect(sun.star!.phase).toBe('WD');
+    expect(earth).toBeTruthy();
+    const o = orbitFromState(V3.sub(earth!.pos, sun.pos), V3.sub(earth!.vel, sun.vel), G * (sun.mass + earth!.mass), 0);
+    // Slow mass loss: a grows as 1/M, the orbit stays nearly circular.
+    expect(o.e).toBeLessThan(0.1);
+    expect(o.a / AU).toBeGreaterThan(1.5);
+    const count = (re: RegExp) => msgs.filter((m) => re.test(m)).length;
+    expect(count(/last of the oceans/)).toBeLessThanOrEqual(1);
+    expect(count(/eruption/i)).toBe(0);
+  });
+});

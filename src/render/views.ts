@@ -457,7 +457,8 @@ export class RockyView extends BodyView {
       vu.uScale.value = 1 / (cloudAlt * 1.3);
       // Clouds in thin air (Mars) are wisps of ice, not thick decks.
       const thin = clamp((c?.P ?? 1e5) / 3e4, 0.06, 1);
-      vu.uDensity.value = thin / (cloudAlt * 0.12);
+      // Optical depth ~10–30 through a kilometre of cumulus.
+      vu.uDensity.value = thin / (cloudAlt * 0.03);
       vu.uTime.value = ctx.realTime;
       vu.uOpacity.value = volFade;
       (vu.uCloudColor.value as THREE.Vector3).copy(deckCol);

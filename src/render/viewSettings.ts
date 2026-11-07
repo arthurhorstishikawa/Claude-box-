@@ -19,6 +19,11 @@ export interface ViewSettings {
   quality: 'low' | 'medium' | 'high';
   /** Extra exposure (EV) applied on top of auto/fixed exposure. */
   ev: number;
+  /**
+   * How far the eye may adapt to darkness (maximum exposure, relative to daylight). Higher
+   * values make night scenes brighter. Stars use the full dark-adapted sensitivity regardless.
+   */
+  adaptLimit: number;
 }
 
 export const view: ViewSettings = {
@@ -34,6 +39,7 @@ export const view: ViewSettings = {
   bloom: true,
   quality: 'medium',
   ev: 0,
+  adaptLimit: 1e4,
 };
 
 export const viewEvents = new Emitter<{ changed: keyof ViewSettings }>();

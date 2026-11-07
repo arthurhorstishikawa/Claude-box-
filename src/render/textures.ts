@@ -289,3 +289,144 @@ export function makeNoise3D(size = 64): THREE.Data3DTexture {
   t.needsUpdate = true;
   return t;
 }
+
+// ---------------------------------------------------------------------------- cloud noise
+
+/** Tileable 3D Worley noise (1 − nearest-feature distance), `cells` per side. */
+function worley3D(size: number, cells: number, rng: Rng): Float32Array {
+  const pts = new Float32Array(cells * cells * cells * 3);
+  for (let i = 0; i < pts.length; i++) pts[i] = rng.next();
+  const out = new Float32Array(size * size * size);
+  const cs = size / cells;
+  for (let z = 0; z < size; z++)
+    for (let y = 0; y < size; y++)
+      for (let x = 0; x < size; x++) {
+        const fx = (x + 0.5) / cs,
+          fy = (y + 0.5) / cs,
+          fz = (z + 0.5) / cs;
+        const cx = Math.floor(fx),
+          cy = Math.floor(fy),
+          cz = Math.floor(fz);
+        let best = 9;
+        for (let dz = -1; dz <= 1; dz++)
+          for (let dy = -1; dy <= 1; dy++)
+            for (let dx = -1; dx <= 1; dx++) {
+              const ix = cx + dx,
+                iy = cy + dy,
+                iz = cz + dz;
+              const w = (((iz % cells) + cells) % cells) * cells * cells + (((iy % cells) + cells) % cells) * cells + (((ix % cells) + cells) % cells);
+              const px = ix + pts[3 * w] - fx,
+                py = iy + pts[3 * w + 1] - fy,
+                pz = iz + pts[3 * w + 2] - fz;
+              const d = px * px + py * py + pz * pz;
+              if (d < best) best = d;
+            }
+        out[(z * size + y) * size + x] = 1 - Math.min(1, Math.sqrt(best));
+      }
+  return out;
+}
+
+/** Tileable value-noise fBm (smooth lattice noise, octaves at 4, 8, 16, 32 per side). */
+function valueFbm3D(size: number, rng: Rng): Float32Array {
+  const octs = [4, 8, 16].map((n) => {
+    const v = new Float32Array(n * n * n);
+    for (let i = 0; i < v.length; i++) v[i] = rng.next();
+    return { n, v };
+  });
+  const out = new Float32Array(size * size * size);
+  const fade = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
+  for (let z = 0; z < size; z++)
+    for (let y = 0; y < size; y++)
+      for (let x = 0; x < size; x++) {
+        let s = 0,
+          amp = 0.6,
+          norm = 0;
+        for (const { n, v } of octs) {
+          const fx = (x / size) * n,
+            fy = (y / size) * n,
+            fz = (z / size) * n;
+          const x0 = Math.floor(fx),
+            y0 = Math.floor(fy),
+            z0 = Math.floor(fz);
+          const tx = fade(fx - x0),
+            ty = fade(fy - y0),
+            tz = fade(fz - z0);
+          const at = (i: number, j: number, k: number) => v[((k % n) * n + (j % n)) * n + (i % n)];
+          const c00 = at(x0, y0, z0) * (1 - tx) + at(x0 + 1, y0, z0) * tx;
+          const c10 = at(x0, y0 + 1, z0) * (1 - tx) + at(x0 + 1, y0 + 1, z0) * tx;
+          const c01 = at(x0, y0, z0 + 1) * (1 - tx) + at(x0 + 1, y0, z0 + 1) * tx;
+          const c11 = at(x0, y0 + 1, z0 + 1) * (1 - tx) + at(x0 + 1, y0 + 1, z0 + 1) * tx;
+          s += ((c00 * (1 - ty) + c10 * ty) * (1 - tz) + (c01 * (1 - ty) + c11 * ty) * tz) * amp;
+          norm += amp;
+          amp *= 0.5;
+        }
+        out[(z * size + y) * size + x] = s / norm;
+      }
+  return out;
+}
+
+function tex3D(data: Uint8Array, size: number): THREE.Data3DTexture {
+  const t = new THREE.Data3DTexture(data, size, size, size);
+  t.format = THREE.RGBAFormat;
+  t.type = THREE.UnsignedByteType;
+  t.wrapS = t.wrapT = t.wrapR = THREE.RepeatWrapping;
+  t.magFilter = THREE.LinearFilter;
+  t.minFilter = THREE.LinearFilter;
+  t.unpackAlignment = 1;
+  t.needsUpdate = true;
+  return t;
+}
+
+export interface CloudNoise {
+  /** R: Perlin–Worley (billowy cumulus); G/B/A: Worley at 4, 8, 16 cells. */
+  shape: THREE.Data3DTexture;
+  /** RGB: fine Worley at 8, 16, 32 cells (edge erosion). */
+  detail: THREE.Data3DTexture;
+  /** Mean and spread of the base shape value, for coverage calibration. */
+  mu: number;
+  sd: number;
+}
+
+let cloudNoise: CloudNoise | null = null;
+
+/** Cloud noise volumes in the style of production real-time cloud renderers (built once). */
+export function getCloudNoise(): CloudNoise {
+  if (cloudNoise) return cloudNoise;
+  const rng = new Rng(4242);
+  const S = 64;
+  const perlin = valueFbm3D(S, rng);
+  const w4 = worley3D(S, 4, rng),
+    w8 = worley3D(S, 8, rng),
+    w16 = worley3D(S, 16, rng);
+  const n = S * S * S;
+  const shape = new Uint8Array(n * 4);
+  let sum = 0,
+    sum2 = 0;
+  for (let k = 0; k < n; k++) {
+    const wf = 0.625 * w4[k] + 0.25 * w8[k] + 0.125 * w16[k];
+    // Perlin–Worley: value noise dilated by inverted Worley → connected billows.
+    const pw = clamp(wf + (perlin[k] - 0.5) * 1.4, 0, 1);
+    shape[4 * k] = Math.round(pw * 255);
+    shape[4 * k + 1] = Math.round(w4[k] * 255);
+    shape[4 * k + 2] = Math.round(w8[k] * 255);
+    shape[4 * k + 3] = Math.round(w16[k] * 255);
+    // Base shape exactly as the shader builds it (remap of pw by the Worley fBm).
+    const base = clamp((pw - (wf - 1)) / (2 - wf), 0, 1);
+    sum += base;
+    sum2 += base * base;
+  }
+  const D = 32;
+  const d8 = worley3D(D, 8, rng),
+    d16 = worley3D(D, 16, rng),
+    d32 = worley3D(D, 32, rng);
+  const detail = new Uint8Array(D * D * D * 4);
+  for (let k = 0; k < D * D * D; k++) {
+    detail[4 * k] = Math.round(d8[k] * 255);
+    detail[4 * k + 1] = Math.round(d16[k] * 255);
+    detail[4 * k + 2] = Math.round(d32[k] * 255);
+    detail[4 * k + 3] = 255;
+  }
+  const mu = sum / n;
+  cloudNoise = { shape: tex3D(shape, S), detail: tex3D(detail, D), mu, sd: Math.sqrt(Math.max(1e-6, sum2 / n - mu * mu)) };
+  return cloudNoise;
+}

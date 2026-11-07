@@ -127,7 +127,7 @@ export class Starfield {
     this.group.add(this.sky);
   }
 
-  update(exposure: number, pixelRatio: number, viewportHeight: number, camera: THREE.PerspectiveCamera): void {
+  update(exposure: number, pixelRatio: number, viewportHeight: number, camera: THREE.PerspectiveCamera, starExposure = exposure): void {
     const fov = camera.fov;
     (this.skyMat.uniforms.uProjInv.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
     (this.skyMat.uniforms.uCamRot.value as THREE.Matrix3).setFromMatrix4(camera.matrixWorld);
@@ -138,9 +138,9 @@ export class Starfield {
     const m0 = 2.0e-11;
     const pixelSolidAngle = Math.pow((fov * Math.PI) / 180 / viewportHeight, 2);
     const physical = (m0 / pixelSolidAngle) * Math.PI;
-    this.starMat.uniforms.uScale.value = realistic ? physical * exposure : 0.9;
+    this.starMat.uniforms.uScale.value = realistic ? physical * starExposure : 0.9;
     this.starMat.uniforms.uPx.value = pixelRatio;
     // Diffuse Milky Way ≈ 3e-9 of sunlit-white radiance (dark-sky surface brightness).
-    this.skyMat.uniforms.uScale.value = realistic ? 4e-9 * exposure : 0.035;
+    this.skyMat.uniforms.uScale.value = realistic ? 4e-9 * Math.sqrt(exposure * starExposure) : 0.035;
   }
 }

@@ -292,6 +292,8 @@ export class TerrestrialClimate {
   lifeStage = 0;
   /** Years of continuously hostile conditions (for extinctions). */
   private hostileYears = 0;
+  /** Fast-model runaway greenhouse state (with hysteresis). */
+  private runawayLatch = false;
   /** Years spent (in good conditions) in the current stage of evolution. */
   lifeProgress = 0;
   /** Continental drift elapsed (Myr) and the amount the current terrain reflects. */
@@ -579,6 +581,19 @@ export class TerrestrialClimate {
         m += a * (this.w[k] + fl * (this.snow[k] + this.soil[k]));
       }
     }
+    return m;
+  }
+
+  /** Water held as snow, ice and soil moisture on land (everything but vapour and the ocean). */
+  private storedOutsideOceanExceptVapour(): number {
+    const { grid } = this;
+    const A = this.area();
+    let m = 0;
+    for (let j = 0; j < grid.nLat; j++)
+      for (let i = 0; i < grid.nLon; i++) {
+        const k = j * grid.nLon + i;
+        m += grid.cellArea[j] * A * (1 - this.ocean[k]) * (this.snow[k] + this.soil[k]);
+      }
     return m;
   }
 
@@ -1264,7 +1279,7 @@ export class TerrestrialClimate {
     const vapour = (T: number) => (water && hasAtm ? 0.66 * this.wsat(T, pDry) : 0);
     let vapTot = 0;
     for (let b = 0; b < nB; b++) vapTot += vapour(bT[b]) * bArea[b];
-    const vapScale = water ? Math.min(1, this.waterTotal / Math.max(vapTot * A, 1e-30)) : 0;
+    let vapScale = water ? Math.min(1, this.waterTotal / Math.max(vapTot * A, 1e-30)) : 0;
     const P = pDry + vapTot * vapScale * g;
     this.P = P;
     const cpAir = 1004;
@@ -1287,7 +1302,14 @@ export class TerrestrialClimate {
     {
       let asrG = 0;
       for (let b = 0; b < nB; b++) asrG += bIns[b] * (1 - 0.3) * transmit * bArea[b];
-      globalRunaway = asrG + ctx.internalHeat > olrLim * 0.98 || (this.stats.runaway && asrG > olrLim * 0.85);
+      // Latched: once the oceans boil it takes much less sunlight to re-condense them.
+      globalRunaway = asrG + ctx.internalHeat > olrLim * 0.98 || ((this.runawayLatch || this.stats.runaway) && asrG > olrLim * 0.85);
+      this.runawayLatch = globalRunaway;
+      // In a runaway greenhouse the oceans have boiled: all the water is steam.
+      if (globalRunaway && water && hasAtm) {
+        vapScale = this.waterTotal / Math.max(vapTot * A, 1e-30);
+        this.P = pDry + (this.waterTotal * g) / A;
+      }
     }
     for (let pass = 0; pass < 3; pass++) {
       for (let b = 0; b < nB; b++) {
@@ -1367,6 +1389,24 @@ export class TerrestrialClimate {
       const eps = olrB[b] / Math.max(SIGMA * Math.pow(Tn[b], 4), 1e-9);
       tSummer[b] = Math.pow((q * (1 - alb[b]) * transmit + ctx.internalHeat) / (SIGMA * Math.max(eps, 0.05)), 0.25);
     }
+    // A huge step after a sudden change (a star swelling into a red giant) can overshoot the
+    // linearised solve: no band can exceed the radiative-equilibrium temperature its sunlight
+    // and greenhouse allow, nor drop below what internal heat alone sustains.
+    {
+      let insMax = 0;
+      for (let b = 0; b < nB; b++) insMax = Math.max(insMax, bIns[b]);
+      const tauCap = tauDry + (globalRunaway ? 200 : 10);
+      const Tcap = Math.pow(((insMax + ctx.internalHeat) / SIGMA) * (1 + 0.75 * tauCap), 0.25) * 1.05;
+      const Tfloor = Math.pow(Math.max(ctx.internalHeat, 1e-6) / SIGMA, 0.25);
+      for (let b = 0; b < nB; b++) if (!(Tn[b] <= Tcap)) Tn[b] = Number.isFinite(Tn[b]) ? Tcap : Math.min(bT[b], Tcap);
+      for (let b = 0; b < nB; b++) Tn[b] = Math.max(Tn[b], Tfloor, 3);
+      // Damp big jumps: with steam feedbacks the long-step solve can overshoot back and forth
+      // around a steam-atmosphere balance (oceans boiling and re-condensing every step).
+      for (let b = 0; b < nB; b++) {
+        const d = Tn[b] - bT[b];
+        if (Math.abs(d) > 15) Tn[b] = bT[b] + Math.sign(d) * (15 + 0.5 * (Math.abs(d) - 15));
+      }
+    }
     this.simpleT = Tn.slice();
     // Ice-sheet growth draws on the ocean; at most a third of it per step.
     const oceanNow = this.oceanMass();
@@ -1425,6 +1465,14 @@ export class TerrestrialClimate {
       }
     }
     if (frostGas) this.gas[frostGas] = Math.max(0, this.gas[frostGas] - frostDelta);
+    if (this.runawayLatch && water && hasAtm) {
+      // Runaway: every drop is steam — normalise the vapour columns to the whole inventory.
+      let wSum = 0;
+      for (let k = 0; k < N; k++) wSum += this.w[k] * grid.cellArea[Math.floor(k / nLon)];
+      const want = Math.max(0, this.waterTotal - this.storedOutsideOceanExceptVapour()) / A;
+      if (wSum > 0) for (let k = 0; k < N; k++) this.w[k] *= want / wSum;
+      this.updateSeaLevel();
+    }
     this.storms.storms = [];
     this.stormFactor.fill(0);
     if (this.biosphere) this.updateVegetation(dt, P);
@@ -1911,7 +1959,9 @@ export class TerrestrialClimate {
 
   /** Random eruptions on geologically active worlds (only at time speeds where they matter). */
   private randomEruptions(dt: number, ctx: ClimateContext): void {
-    if (!ctx.geology || this.spinningUp || dt > 50 * YEAR || ctx.geothermal < 0.03) return;
+    // Discrete eruptions only matter (and are only visible) at human time scales; over longer
+    // steps volcanism is the steady outgassing of the carbon cycle.
+    if (!ctx.geology || this.spinningUp || dt > 2 * YEAR || ctx.geothermal < 0.03) return;
     this.eruptClock += dt;
     const activity = clamp(ctx.geothermal / 0.087, 0.3, 30);
     // VEI ≥ 6 roughly every 80 years on Earth.
@@ -2082,11 +2132,12 @@ export class TerrestrialClimate {
     };
     // Notable transitions.
     const f = this.flags;
+    // Ocean flag with hysteresis: it only re-arms once a real ocean has returned.
+    const hasOcean = oceanMass > (f.ocean ? 0.001 : 0.02) * this.waterTotal && this.waterTotal > 0;
     if (runaway && !f.runaway) this.onEvent?.('Runaway greenhouse! Oceans are boiling into a steam atmosphere.', 'danger');
     if (snowball && !f.snowball) this.onEvent?.('Snowball state: ice has covered almost the entire surface.', 'warn');
     if (!snowball && f.snowball) this.onEvent?.('The snowball is thawing — open water has returned.', 'info');
     if (magma > 0.5 && !f.magma) this.onEvent?.('Surface has melted into a magma ocean.', 'danger');
-    const hasOcean = oceanMass > 0.001 * this.waterTotal && this.waterTotal > 0;
     if (!hasOcean && f.ocean && this.waterTotal > 0 && mT > 300) this.onEvent?.('The last of the oceans has evaporated.', 'danger');
     f.runaway = runaway;
     f.snowball = snowball;

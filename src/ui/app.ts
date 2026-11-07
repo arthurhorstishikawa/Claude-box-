@@ -584,7 +584,13 @@ export class App {
     if (s && s.t.length > 1) drawChart(this.stationChart, s.t, [{ values: s.T.map((x) => x - 273.15), color: '#ff9f6b', label: 'T' }], { fmt: (v) => `${v.toFixed(0)}°`, xfmt: (t) => fmtDate(this.sim.epochMs, t) });
   }
 
+  private recentToasts = new Map<string, number>();
   private toast(msg: string, level: string, bodyId?: number): void {
+    // The same message within 15 s (e.g. a state flickering at extreme warp) is shown once.
+    const now = performance.now();
+    if ((this.recentToasts.get(msg) ?? -1e9) > now - 15000) return;
+    this.recentToasts.set(msg, now);
+    if (this.recentToasts.size > 200) for (const [k, t] of this.recentToasts) if (t < now - 15000) this.recentToasts.delete(k);
     const el = h('div', { class: `toast ${level}` }, msg);
     if (bodyId !== undefined) el.addEventListener('click', () => {
       const b = this.sim.getBody(bodyId);
@@ -1627,6 +1633,15 @@ export class App {
         sel('Temperature unit', displaySettings.temp, [['C', '°C'], ['K', 'Kelvin'], ['F', '°F']], (v) => (displaySettings.temp = v)),
         sel('Brightness', view.mode, [['realistic', 'Realistic (eye adaptation)'], ['enhanced', 'Enhanced (always visible)']], (v) => setView('mode', v)),
         slider('Exposure bias', { min: -4, max: 4, step: 0.25, value: view.ev, fmt: (v) => `${v >= 0 ? '+' : ''}${v.toFixed(2)} EV`, onInput: (v) => setView('ev', v) }),
+        slider('Eye adaptation limit (night brightness)', {
+          min: 2,
+          max: 5.5,
+          step: 0.1,
+          value: Math.log10(view.adaptLimit),
+          fmt: (v) => (v < 3 ? 'very dark nights' : v < 4.3 ? 'natural' : v < 5 ? 'bright nights' : 'night vision'),
+          onInput: (v) => setView('adaptLimit', Math.pow(10, v)),
+          title: 'How far the eye may adapt to darkness. Stars stay visible at any setting.',
+        }),
         section('Simulation'),
         sel('Gravity', s.physics, [['auto', 'Auto (N-body, Kepler at extreme speed)'], ['nbody', 'Always N-body'], ['kepler', 'Always Kepler orbits']], (v) => (s.physics = v)),
         slider('N-body accuracy (smaller = more precise)', { min: 0.003, max: 0.05, step: 0.001, value: s.accuracy, fmt: (v) => v.toFixed(3), onInput: (v) => (s.accuracy = v) }),

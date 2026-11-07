@@ -385,7 +385,10 @@ export class Simulation {
         continue;
       }
       const P = b.rotationPeriod;
-      if (Number.isFinite(P) && P !== 0) b.rotationAngle = wrap2Pi(b.rotationAngle + (TWO_PI * dt) / P);
+      // At extreme warp a planet would spin thousands of times per frame and appear to flicker
+      // at random; its climate already uses day-averaged sunlight there, so turn it at most a
+      // little per step instead.
+      if (Number.isFinite(P) && P !== 0) b.rotationAngle = wrap2Pi(b.rotationAngle + TWO_PI * Math.sign(P) * Math.min(Math.abs(dt / P), dt > 30 * DAY ? 0.01 : Infinity));
     }
   }
 
@@ -528,7 +531,10 @@ export class Simulation {
       const prevPhase = s.phase;
       const prevMass = b.mass;
       refreshStar(b, dt);
-      if (Math.abs(b.mass - prevMass) / prevMass > 1e-3) this.keplerDirty = true;
+      // Stellar winds and planetary-nebula ejection take far longer than an orbit, so orbits
+      // widen adiabatically (a ∝ 1/M, eccentricity kept) — even when one frame of extreme
+      // time warp covers the whole loss. Supernovae are handled as impulsive below.
+      if (s.phase !== 'SN' && b.mass < prevMass * (1 - 1e-6)) this.adiabaticMassLoss(b, prevMass);
       if (s.phase !== prevPhase) {
         const label = PHASE_LABEL[s.phase];
         const lvl: NotifyLevel = s.phase === 'SN' ? 'danger' : 'warn';
@@ -543,6 +549,34 @@ export class Simulation {
         this.notify(`${b.name} collapsed into a black hole.`, 'danger', b.id);
       }
     }
+  }
+
+  /** Expand the orbits of everything orbiting `star` as if its mass loss were slow. */
+  private adiabaticMassLoss(star: Body, before: number): void {
+    const f = before / star.mass; // > 1
+    if (this.mode === 'kepler') return; // KeplerSystem.adjustMasses applies a ∝ 1/M every step
+    const below = (b: Body): boolean => {
+      for (let x = this.primaryOf(b), n = 0; x && n < 8; x = this.primaryOf(x), n++) if (x === star) return true;
+      return false;
+    };
+    for (const b of this.bodies) {
+      if (b === star || this.primaryOf(b) !== star) continue;
+      const dr = V3.sub(b.pos, star.pos).scale(f - 1);
+      const dv = V3.sub(b.vel, star.vel).scale(1 / f - 1);
+      // Move the planet together with its moons.
+      for (const m of this.bodies) {
+        if (m === b || (m !== b && !below(m)) || !this.isUnder(m, b)) continue;
+        m.pos.add(dr);
+        m.vel.add(dv);
+      }
+      b.pos.add(dr);
+      b.vel.add(dv);
+    }
+  }
+
+  private isUnder(m: Body, p: Body): boolean {
+    for (let x = this.primaryOf(m), n = 0; x && n < 8; x = this.primaryOf(x), n++) if (x === p) return true;
+    return false;
   }
 
   private supernova(b: Body, massBefore: number): void {

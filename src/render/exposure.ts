@@ -116,30 +116,42 @@ export class EyeAdaptation {
     }
   }
 
+  /** Sensitivity used for stars: the fully dark-adapted eye picks out point lights. */
+  starExposure = 1;
+  private starTarget = 1;
+
   update(dt: number): void {
     if (view.mode !== 'realistic') {
       this.exposure = Math.pow(2, view.ev);
+      this.starExposure = this.exposure;
       return;
     }
     // Scene brightness plus the veil of glare from bright sources (`peak` = glare flux).
     const L = this.sceneLuminance + 0.05 * this.peak;
-    // Middle-grey key: a little lower in the dark so night still looks like night.
-    const key = 0.07 + 0.11 * clamp((Math.log10(L) + 6) / 4, 0, 1);
+    // Perceived brightness: daylight scenes map to middle grey; twilight and night scenes stay
+    // dim (night vision is far less sensitive than a camera that would turn night into day).
+    const key = 0.18 * Math.pow(10, -1.2 * clamp((-2 - Math.log10(L)) / 5, 0, 1));
     const fromAverage = key / L;
     // Bright parts of the scene itself (sunlit clouds, snow) stay just below white.
     const fromHighlights = 1.0 / this.highlight;
-    const t = Math.min(fromAverage, fromHighlights) * Math.pow(2, view.ev);
-    // Range of the dark- to light-adapted human eye (relative to a sunlit white surface).
-    this.target = clamp(t, 1.5e-6, 3e5);
+    const raw = Math.min(fromAverage, fromHighlights) * Math.pow(2, view.ev);
+    // The adaptation limit: how far the eye may open up in the dark.
+    const limit = clamp(view.adaptLimit, 10, 3e5);
+    this.target = clamp(raw, 1.5e-6, limit);
+    this.starTarget = clamp(Math.min(0.18 / L, fromHighlights) * Math.pow(2, view.ev), 1.5e-6, 3e5);
     const brighter = this.target < this.exposure;
     // Clipped highlights: we only know the scene is brighter than measured — adapt fast.
     const tau = this.clipped ? 0.12 : brighter ? 0.45 : 2.8;
     const a = 1 - Math.exp(-dt / tau);
     this.exposure = Math.exp(Math.log(this.exposure) + (Math.log(this.target) - Math.log(this.exposure)) * a);
+    // Dark adaptation for faint stars is slow (minutes in reality; seconds here).
+    const as = 1 - Math.exp(-dt / (this.starTarget < this.starExposure ? 0.45 : 5));
+    this.starExposure = Math.exp(Math.log(this.starExposure) + (Math.log(this.starTarget) - Math.log(this.starExposure)) * as);
   }
 
   /** Instantly adapt (after teleports/scenario loads). */
   snap(): void {
     this.exposure = this.target;
+    this.starExposure = this.starTarget;
   }
 }
