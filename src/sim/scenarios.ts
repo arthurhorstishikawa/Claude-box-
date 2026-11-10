@@ -71,7 +71,7 @@ export function sun(age = 4.6e9): Body {
   return s;
 }
 
-export function earthLike(name = 'Earth', seed = 1977, civ: 'modern' | 'preindustrial' | null = 'modern'): Body {
+export function earthLike(name = 'Earth', seed = 42, civ: 'modern' | 'preindustrial' | null = 'modern'): Body {
   const e = makeRocky({
     name,
     mass: 5.9722e24,
@@ -115,7 +115,7 @@ function buildSolarSystem(withMoons = true): Body[] {
     'Venus',
   );
   venus.description = '92 bar CO₂ and sulfuric-acid clouds: a runaway greenhouse.';
-  const earth = add(earthLike('Earth', 1977, 'modern'), elementsAt(PLANETS.Earth, T), 'Earth');
+  const earth = add(earthLike('Earth', 42, 'modern'), elementsAt(PLANETS.Earth, T), 'Earth');
   const mars = add(
     makeRocky({ name: 'Mars', mass: 6.4171e23, radius: 3.3895e6, rotationHours: 24.6229, atmosphere: { CO2: 580, N2: 16, Ar: 11, O2: 1 }, waterGEL: 25, terrain: 'marslike', seed: 404, dust: 0.3, iceCapLat: 80, internalHeat: 0.02, initialTemp: 210, color: '#c1440e' }),
     elementsAt(PLANETS.Mars, T),

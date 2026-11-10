@@ -421,7 +421,7 @@ export class Simulation {
       b.eccSmoothed += (o.e - b.eccSmoothed) * k;
       const e = Math.max(b.forcedEcc, b.eccSmoothed);
       const n = (2 * Math.PI) / P;
-      const k2Q = b.isGiant ? 1e-5 : b.composition.ice > 0.3 ? 0.005 : 0.012;
+      const k2Q = b.isGiant ? 1e-5 : b.composition.ice > 0.3 ? 0.0015 : 0.0075;
       const a = o.a;
       const power = 10.5 * k2Q * ((G * p.mass * p.mass * Math.pow(b.radius, 5) * n * e * e) / Math.pow(a, 6));
       b.tidalHeat = Math.min(1e4, power / (4 * Math.PI * b.radius * b.radius));
@@ -858,7 +858,22 @@ export class Simulation {
         const ctx = this.climateContext(b, il, isFocus ? realDt : realDt * 4);
         const n = isFocus ? clamp(Math.ceil(pend / 1800), 1, 2) : 1;
         const h = pend / n;
-        for (let s = 0; s < n; s++) c.step(h, ctx);
+        for (let s = 0; s < n; s++) {
+          // Each sub-step sees the star where it was at that time: earlier sub-steps had the
+          // sub-stellar point further east. (Using the frame's final geometry for all of them
+          // would light the same hemisphere repeatedly at some time speeds.)
+          const rem = (n - 1 - s) * h;
+          if (rem > 0) {
+            const il2 = il.map((x) => {
+              if (!Number.isFinite(x.synodic) || x.synodic === 0) return x;
+              const a = (TWO_PI * rem) / x.synodic;
+              const ca = Math.cos(a),
+                sa = Math.sin(a);
+              return { ...x, dir: [x.dir[0] * ca - x.dir[1] * sa, x.dir[0] * sa + x.dir[1] * ca, x.dir[2]] as [number, number, number] };
+            });
+            c.step(h, { ...ctx, illum: il2 });
+          } else c.step(h, ctx);
+        }
         if (this.settings.civilizations) c.civStep(pend, ctx);
         for (const e of c.eruptions) this.events.emit('eruption', { body: b, ...e });
         c.eruptions.length = 0;

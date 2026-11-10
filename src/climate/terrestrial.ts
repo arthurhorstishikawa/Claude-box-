@@ -39,9 +39,9 @@ const BARREN_ALBEDO: Record<TerrainStyle, [number, number]> = {
   venuslike: [0.12, 0.2],
   moonlike: [0.07, 0.16],
   mercurylike: [0.08, 0.15],
-  europalike: [0.45, 0.7],
+  europalike: [0.5, 0.7],
   ganymedelike: [0.25, 0.5],
-  callistolike: [0.15, 0.35],
+  callistolike: [0.14, 0.3],
   iolike: [0.35, 0.75],
   titanlike: [0.08, 0.25],
   plutolike: [0.3, 0.9],
@@ -125,6 +125,25 @@ export interface ClimateStats {
 }
 
 /** Equirectangular layers the renderer and map can display. */
+/**
+ * Fraction of the resolved wind used to advect heat and vapour at weather time steps. The
+ * eddy diffusion already carries the time-mean transport (and is all that long steps use),
+ * so full advection on top would make the climate depend on the time speed.
+ */
+const ADVECT = 0.1;
+/**
+ * Cloud calibration: shortwave reflectivity and longwave optical depth per unit cloud
+ * fraction, and the relative humidity at which layer cloud starts to form.
+ */
+export const CLOUD = { sw: 0.3, lw: 0.29, rh0: 0.4, max: 0.9 };
+/** Fast-mode (band model) heat transport relative to the full model's, fitted so both give the same equator-to-pole contrast and ice cover. */
+const SIMPLE_TRANSPORT = 0.8;
+
+/** Radiative weight of cloud in air holding a vapour column w (kg/m²): thin when very dry. */
+const thinCloud = (w: number) => 0.35 + 0.65 * smoothstep(0.02, 1.0, w);
+/** Mean cloud fraction the full model produces where there is a water cycle (fast-mode proxy). */
+const CLOUD_MEAN = 0.64;
+
 export const BIOMES = ['Ocean', 'Ice', 'Tundra', 'Boreal forest', 'Temperate forest', 'Grassland', 'Desert', 'Savanna', 'Rainforest', 'Barren'] as const;
 export const LIFE_STAGES = ['Lifeless', 'Microbial', 'Oxygenic photosynthesis', 'Land plants', 'Complex animals'] as const;
 
@@ -268,6 +287,8 @@ export class TerrestrialClimate {
   Gcc!: Float64Array;
   private snowfall!: Float64Array;
   private ecap!: Float64Array;
+  /** Absorbed sunlight averaged over about a day (energy available for evaporation). */
+  private asrMean!: Float64Array;
   private dLand!: Float64Array;
   private landMask!: Float64Array;
 
@@ -369,7 +390,7 @@ export class TerrestrialClimate {
         }
       }
     }
-    if (T0 < 200 && this.waterTotal > 0 && this.vol.id === 'H2O' && pDry0 >= 611) for (let k = 0; k < this.grid.N; k++) this.seaIce[k] = Math.max(this.seaIce[k], 5000);
+    if (T0 < 200 && this.waterTotal > 0 && this.vol.id === 'H2O' && (pDry0 >= 611 || pDry0 === 0)) for (let k = 0; k < this.grid.N; k++) this.seaIce[k] = Math.max(this.seaIce[k], 5000);
     if (this.waterTotal > 0 && this.vol.id === 'H2O' && pDry0 > 0 && pDry0 < 611) this.freezeDryOcean(1);
     this.stats = this.emptyStats();
     this.bulk = bulkFromMasses(this.gas, R, g);
@@ -465,6 +486,7 @@ export class TerrestrialClimate {
     this.Gcc = f();
     this.snowfall = f();
     this.ecap = f();
+    this.asrMean = f();
     this.dLand = f();
     this.landMask = f();
     this.samples = new Float32Array(N * this.S);
@@ -762,11 +784,13 @@ export class TerrestrialClimate {
       visFrac = 0.47;
       rayFac = 1;
     }
-    const snowAlb = vol.id === 'H2O' ? 0.95 * visFrac + 0.65 * (1 - visFrac) : 0.35;
+    // Snow stays bright where it is renewed by snowfall; in thin, dusty air it is old and dirty.
+    const freshSnow = 0.95 * visFrac + 0.65 * (1 - visFrac);
+    const snowAlb = vol.id === 'H2O' ? 0.45 + (freshSnow - 0.45) * smoothstep(1e3, 2e4, P) : 0.35;
     const seaIceAlb = 0.75 * visFrac + 0.42 * (1 - visFrac);
     this.hostTeff = this.fluxWeightedTeff(ctx.illum);
     const vegAlbBase = plantAlbedo(this.hostTeff);
-    const frostAlb = 0.6 * visFrac + 0.45 * (1 - visFrac);
+    const frostAlb = 0.5 * visFrac + 0.4 * (1 - visFrac);
 
     // 2. Insolation.
     computeInsolation(grid, ctx.illum, dt, this.insol);
@@ -781,13 +805,13 @@ export class TerrestrialClimate {
     const ch4co2 = bulk.pp.CH4 / Math.max(bulk.pp.CO2, 1e-3);
     const hazeTau = this.hazeBase + (bulk.pp.CH4 > 100 && vol.id === 'H2O' ? 0.6 * smoothstep(0.1, 1, ch4co2) : 0);
     const hazeAbs = 1 - Math.exp(-hazeTau);
-    const hazeAlb = 0.12 * hazeAbs;
+    const hazeAlb = 0.06 * hazeAbs;
     this.aerosol *= Math.exp(-dt / (1.5 * YEAR));
     this.dust = this.dustBase + (this.dust - this.dustBase) * Math.exp(-dt / (60 * DAY));
     const aerAlb = (0.3 * this.aerosol) / (1 + this.aerosol);
     const dustAbs = (0.25 * this.dust) / (1 + this.dust);
-    const transmitFactor = (1 - 0.5 * hazeAbs) * (1 - dustAbs) * Math.exp(-0.15 * this.aerosol);
-    const skyR = 1 - (1 - rRay * (1 - hazeAbs)) * (1 - deck) * (1 - hazeAlb) * (1 - aerAlb);
+    const transmitFactor = (1 - 0.35 * hazeAbs) * (1 - dustAbs) * Math.exp(-0.15 * this.aerosol);
+    const skyR = 1 - (1 - rRay * (1 - hazeAbs) * (1 - hazeAbs)) * (1 - deck) * (1 - hazeAlb) * (1 - aerAlb);
 
     const fBL = 0.15;
     const dayLen = Number.isFinite(ctx.synodicDay) ? Math.abs(ctx.synodicDay) : Math.max(ctx.orbitPeriod, DAY);
@@ -849,7 +873,9 @@ export class TerrestrialClimate {
     let openOcean = 0;
     for (let k = 0; k < N; k++) openOcean += this.ocean[k] * (this.seaIce[k] < 0.05 ? 1 : 0);
     openOcean /= N;
-    const Foc = Fint + 2 * Math.max(openOcean, hasLiquidReservoir ? 0.35 : 0) * (vol.id === 'H2O' ? 1 : 0.2);
+    // Heat reaching the base of the ice: internal/tidal heat, plus stored sunlight only where
+    // there is open water (a sealed ice shell thickens until it conducts just the internal heat).
+    const Foc = Fint + 0.05 + 2 * openOcean * (vol.id === 'H2O' ? 1 : 0.2);
 
     const C1 = this.C1;
     const C2 = this.C2;
@@ -878,10 +904,12 @@ export class TerrestrialClimate {
         landAlb = landAlb + (snowAlb - landAlb) * snowCov;
         landAlb = landAlb + (frostAlb - landAlb) * frostCov;
         const oceanAlb = vol.id === 'H2O' ? 0.07 : 0.05;
-        let aSurf = fo * (oceanAlb + (seaIceAlb - oceanAlb) * iceC) + fl * landAlb;
+        // An airless ice shell is old, dirty ice: its albedo is the body's own, not fresh sea ice.
+        const iceAlb = hasAtm ? seaIceAlb : barren;
+        let aSurf = fo * (oceanAlb + (iceAlb - oceanAlb) * iceC) + fl * landAlb;
         if (molten) aSurf = 0.1;
         const CF = this.cloud[k];
-        const aCloud = 0.345 * CF;
+        const aCloud = CLOUD.sw * CF;
         const sky = 1 - (1 - skyR) * (1 - aCloud);
         const ap = sky + ((1 - sky) * (1 - sky) * aSurf) / (1 - sky * aSurf);
         this.albedo[k] = ap;
@@ -891,14 +919,15 @@ export class TerrestrialClimate {
         const zAbove = Math.max(0, this.elev[k] + (fl > 0.5 ? this.snow[k] / 917 : 0) - refLevel);
         const pz = hasAtm ? Math.exp(-zAbove / Math.max(scaleH, 100)) : 1;
         const tauV = vapourOpticalDepth(vol.id, this.w[k], P, g);
-        const tau = (tauDry + tauV + 0.25 * CF + 0.05 * this.aerosol) * pz;
+        const tau = (tauDry + tauV + CLOUD.lw * CF + 0.05 * this.aerosol) * pz;
         tauSum += tau * grid.cellArea[j];
         const wsK = hydro ? this.wsat(T1, pDry) : 1;
         this.wsCache[k] = wsK;
         const moist = hydro && vol.id === 'H2O' ? smoothstep(0.3, 0.7, this.w[k] / Math.max(wsK, 1e-9)) * smoothstep(275, 300, T1) * (hasLiquidReservoir ? 1 : 0.3) : 0;
         // OLR and its temperature derivative (analytic; gray atmosphere with a soft moist cap).
         const T1sq = T1 * T1;
-        const gray = (SIGMA * T1sq * T1sq) / (1 + 0.75 * tau);
+        // CO₂/N₂ frost is a poor infrared emitter (and polar-night hoods blanket it): ε ≈ 0.6.
+        const gray = ((1 - 0.4 * frostCov) * (SIGMA * T1sq * T1sq)) / (1 + 0.75 * tau);
         let OLR0 = gray;
         let B = (4 * gray) / T1;
         if (moist > 0) {
@@ -932,7 +961,11 @@ export class TerrestrialClimate {
           LE0 = L * this.evap[k];
           dLE = this.w[k] < wsK ? L * kE * wsK * (vol.Lvap / (vol.Rv * T1sq)) : 0;
           // Evaporation potential is limited by the energy the surface receives (applied in hydrology).
-          const energyCap = Math.max(0, 0.6 * (asr + Fint)) + 0.02 * SIGMA * T1 * T1 * T1 * T1;
+          // ...by the energy received over about a day: the surface (above all the ocean's mixed
+          // layer) stores heat, so evaporation continues through the night.
+          const tauA = Math.max(DAY, Math.min(dayLen, 60 * DAY));
+          this.asrMean[k] += (asr - this.asrMean[k]) * (this.asrMean[k] === 0 ? 1 : 1 - Math.exp(-dt / tauA));
+          const energyCap = Math.max(0, 0.6 * (this.asrMean[k] + Fint)) + 0.02 * SIGMA * T1 * T1 * T1 * T1;
           this.ecap[k] = energyCap / L;
           dLE = Math.min(dLE, energyCap / 2);
         }
@@ -1062,7 +1095,7 @@ export class TerrestrialClimate {
     // Ocean heat transport (slab ocean, split step) and weather-scale advection.
     if (hasLiquidReservoir) grid.diffuse(this.Ts, C1, Cocean1 * 2.5e4, R, dt, this.oceanMask);
     if (hasLiquidReservoir) this.advectOcean(ctx.omega, R, dt);
-    if (hasAtm && dt < 2 * DAY) grid.advect(this.Ta, this.circ.u, this.circ.v, R, dt * 0.7);
+    if (hasAtm && dt < 2 * DAY) grid.advect(this.Ta, this.circ.u, this.circ.v, R, dt * ADVECT);
 
     // 6. Hydrology.
     if (hydro) this.hydrology(dt, ctx, { pDry, rhC, tauC, Katm, hasLiquidReservoir, Tm, A });
@@ -1180,6 +1213,7 @@ export class TerrestrialClimate {
     const bT = new Float64Array(nB);
     const bOcean = new Float64Array(nB);
     const bCloud = new Float64Array(nB);
+    const bCloudNow = new Float64Array(nB);
     const bLandAlb = new Float64Array(nB);
     const bIns = new Float64Array(nB);
     const bZ = new Float64Array(nB);
@@ -1265,12 +1299,12 @@ export class TerrestrialClimate {
     const Tf = vol.TfreezeOcean;
     const tauR = hasAtm ? rayleighDepth(bulk, pDry, g, rayFac) : 0;
     const hazeAbs = 1 - Math.exp(-this.hazeBase);
-    const rRay = 0.45 * ((0.5 * tauR) / (1 + 0.5 * tauR)) * (1 - hazeAbs);
+    const rRay = 0.45 * ((0.5 * tauR) / (1 + 0.5 * tauR)) * (1 - hazeAbs) * (1 - hazeAbs);
     const deck = bulk.pp.SO2 > 1 && pDry > 5e5 && (this.stats.meanT || 300) > 300 ? 0.6 * smoothstep(5e5, 3e6, pDry) : 0;
     this.aerosol *= Math.exp(-dt / (1.5 * YEAR));
     const aerAlb = (0.3 * this.aerosol) / (1 + this.aerosol);
-    const skyR = 1 - (1 - rRay) * (1 - deck) * (1 - 0.12 * hazeAbs) * (1 - aerAlb);
-    const transmit = (1 - 0.5 * hazeAbs) * (1 - (0.25 * this.dustBase) / (1 + this.dustBase));
+    const skyR = 1 - (1 - rRay) * (1 - deck) * (1 - 0.06 * hazeAbs) * (1 - aerAlb);
+    const transmit = (1 - 0.35 * hazeAbs) * (1 - (0.25 * this.dustBase) / (1 + this.dustBase));
     const olrLim = moistOLRLimit(g, vol.id);
     const molar = bulk.molar;
     const Om = Math.max(Math.abs(ctx.omega), Number.isFinite(ctx.orbitPeriod) ? (2 * Math.PI) / ctx.orbitPeriod : 1e-8, 1e-9);
@@ -1314,7 +1348,7 @@ export class TerrestrialClimate {
     for (let pass = 0; pass < 3; pass++) {
       for (let b = 0; b < nB; b++) {
         const moistBoost = 1 + 0.3 * Math.min(2, (vapour(Tn[b]) * vapScale) / 25);
-        kapB[b] = (kappa + bOcean[b] * 2.1e8 * 1.5e4) * moistBoost;
+        kapB[b] = (kappa + bOcean[b] * 2.1e8 * 1.5e4) * moistBoost * SIMPLE_TRANSPORT;
       }
       for (let b = 0; b < nB; b++) {
         const T = Tn[b];
@@ -1324,14 +1358,16 @@ export class TerrestrialClimate {
         // Seasonal snow needs a hydrological cycle; otherwise only existing ice caps count.
         const snowL = Math.max(Math.min(1, bSnow[b] / Math.max(1 - fo, 1e-3)), wetWorld ? smoothstep(271, 254, T) : 0);
         const aSurf = fo * (0.07 + (seaIceAlb - 0.07) * iceO) + (1 - fo) * (bLandAlb[b] + (snowAlb - bLandAlb[b]) * snowL);
-        const CF = bCloud[b];
-        const sky = 1 - (1 - skyR) * (1 - 0.345 * CF);
+        // Clouds follow the climate in fast mode too (they used to stay frozen at their old values).
+        const CF = water && hasAtm ? CLOUD_MEAN * thinCloud(vapour(T) * vapScale) * smoothstep(50, 2000, pDry) : bCloud[b];
+        bCloudNow[b] = CF;
+        const sky = 1 - (1 - skyR) * (1 - CLOUD.sw * CF);
         const ap = T > 1300 ? 0.1 : sky + ((1 - sky) * (1 - sky) * aSurf) / (1 - sky * aSurf);
         alb[b] = ap;
         asrB[b] = bIns[b] * (1 - ap) * transmit;
         const pz = hasAtm ? Math.exp(-bZ[b] / Math.max(scaleH, 100)) : 1;
         const olrAt = (TT: number) => {
-          const tau = (tauDry + vapourOpticalDepth(vol.id, vapour(TT) * vapScale, P, g) + 0.25 * CF) * pz;
+          const tau = (tauDry + vapourOpticalDepth(vol.id, vapour(TT) * vapScale, P, g) + CLOUD.lw * CF) * pz;
           const gray = (SIGMA * TT * TT * TT * TT) / (1 + 0.75 * tau);
           // The moist radiation limit is a planet-wide threshold: only bite when the whole
           // planet absorbs more than it (otherwise tropics just export heat poleward).
@@ -1408,6 +1444,9 @@ export class TerrestrialClimate {
       }
     }
     this.simpleT = Tn.slice();
+    // Share of the ocean that is open water (it stores sunlight that later melts ice from below).
+    let bOpen = 0;
+    for (let b = 0; b < nB; b++) bOpen += (Tn[b] > Tf ? bOcean[b] : 0) * bArea[b];
     // Ice-sheet growth draws on the ocean; at most a third of it per step.
     const oceanNow = this.oceanMass();
     let iceBudget = water ? 0.33 * oceanNow : 0;
@@ -1432,6 +1471,7 @@ export class TerrestrialClimate {
       this.olr[k] = olrB[b];
       this.albedo[k] = alb[b];
       this.w[k] = vapour(this.Ts[k]) * vapScale;
+      if (water && hasAtm) this.cloud[k] += (bCloudNow[b] - this.cloud[k]) * 0.5;
       // Precipitation climatology proxy (kg/m²/s) so vegetation and people have rain.
       if (wetWorld) this.pAnnual[k] = ((0.4 + 3 * smoothstep(255, 300, this.Ts[k])) * (0.55 + 0.45 * bOcean[b])) / 86400;
       else this.pAnnual[k] *= 0.5;
@@ -1447,7 +1487,8 @@ export class TerrestrialClimate {
             iceBudget -= add * cellLand;
           } else if (this.Ts[k] > Tf + 2) this.snow[k] *= Math.exp(-dt / (3e3 * YEAR));
         }
-        this.seaIce[k] = this.ocean[k] > 0 ? (this.Ts[k] < Tf ? Math.max(this.seaIce[k], 2 + (Tf - this.Ts[k]) * 0.3) : 0) : 0;
+        // Conductive equilibrium: the shell thickens until it carries just the heat from below.
+        this.seaIce[k] = this.ocean[k] > 0 ? (this.Ts[k] < Tf ? Math.min(1e5, Math.max(2, (2.2 * (Tf - this.Ts[k])) / (ctx.internalHeat + 0.05 + 2 * bOpen))) : 0) : 0;
       }
       if (frostGas && Tfrost > 0) {
         const cellA = grid.cellArea[j] * A;
@@ -1497,6 +1538,10 @@ export class TerrestrialClimate {
     const R = ctx.R;
     const kC = 1 / p.tauC;
     let evapTot = 0;
+    // Vapour transport first, so what is carried into colder air condenses there within the
+    // same step (doing it afterwards left long steps with supersaturated, over-cloudy air).
+    grid.diffuse(this.w, 1, p.Katm, R, dt);
+    if (dt < 3 * DAY) grid.advect(this.w, this.circ.u, this.circ.v, R, dt * ADVECT);
     const oceanBefore = this.oceanMass();
     let precipLand = 0;
     for (let j = 0; j < nLat; j++) {
@@ -1571,9 +1616,6 @@ export class TerrestrialClimate {
       const f = (0.5 * oceanBefore) / landGain;
       for (let k = 0; k < N; k++) if (this.dLand[k] > 0) this.snow[k] = Math.max(0, this.snow[k] - this.dLand[k] * (1 - f));
     }
-    // Vapour transport.
-    grid.diffuse(this.w, 1, p.Katm, R, dt);
-    if (dt < 3 * DAY) grid.advect(this.w, this.circ.u, this.circ.v, R, dt);
     // Glacier flow: thick land ice spreads slowly; ice pushed onto ocean cells calves.
     if (dt > 30 * DAY) {
       grid.diffuse(this.snow, this.landMask, 3 * smoothstep(1e4, 1e6, this.maxOf(this.snow)), R, dt, this.landMask);
@@ -1657,7 +1699,9 @@ export class TerrestrialClimate {
     }
     if (this.spinningUp) return;
     // Plants store carbon: spreading forests draw down CO₂, dying ones release it.
-    const dC = this.vegetationCarbon() - c0;
+    // Oceans buffer the land biosphere's carbon exchange: only about a quarter of it stays in
+    // the air on the decades-to-centuries this happens over.
+    const dC = (this.vegetationCarbon() - c0) * (this.oceanMass() > 0 ? 0.25 : 1);
     // Plants cannot draw CO₂ below their compensation point (~10 Pa).
     const floor = Math.min(this.gas.CO2, this.partialToMass('CO2', 10));
     this.gas.CO2 = Math.max(floor, this.gas.CO2 - dC * (44 / 12));
@@ -2002,10 +2046,11 @@ export class TerrestrialClimate {
       const itczBoost = 0.2 * Math.exp(-(s * s) / 0.01);
       const ws = this.wsCache[k] || this.wsat(this.Ts[k], this.bulk.pDry);
       const rh = ws > 0 ? this.w[k] / ws : 0;
-      const ls = Math.pow(clamp((rh - 0.55) / 0.4, 0, 1), 1.3) * 0.75;
+      const ls = Math.pow(clamp((rh - CLOUD.rh0) / 0.45, 0, 1), 1.2) * CLOUD.max;
       const conv = clamp((this.precip[k] * DAY) / 12, 0, 0.6) + itczBoost;
       const st = this.stormFactor[k];
-      this.cloud[k] = clamp((1 - (1 - ls) * (1 - conv) * (1 - st)) * (1 - subsid), 0, 1) * smoothstep(50, 2000, P);
+      // Clouds in very dry (cold) air are optically thin.
+      this.cloud[k] = clamp((1 - (1 - ls) * (1 - conv) * (1 - st)) * (1 - subsid), 0, 1) * smoothstep(50, 2000, P) * thinCloud(this.w[k]);
     }
   }
 

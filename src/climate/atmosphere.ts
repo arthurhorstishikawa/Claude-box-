@@ -188,7 +188,7 @@ export function vapourOpticalDepth(vol: 'H2O' | 'CH4', w: number, P: number, g: 
   const pb = Math.max(P, 1) / 1e5;
   if (vol === 'H2O') return 0.197 * Math.pow(w, 0.25) * Math.pow(pb, 0.35);
   // Methane vapour: convert column to partial pressure.
-  return 0.008 * Math.sqrt(w * g) * Math.pow(pb, 0.4);
+  return 0.013 * Math.sqrt(w * g) * Math.pow(pb, 0.4);
 }
 
 /** Broadband Rayleigh optical depth (Earth ≈ 0.1). */
