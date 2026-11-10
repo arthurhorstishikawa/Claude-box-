@@ -319,6 +319,8 @@ export class TerrestrialClimate {
   private runawayLatch = false;
   /** Running (geometric) mean of recent step lengths: picks the model tier. */
   private dtTypical = 0;
+  private outliers = 0;
+  private subStepping = false;
   /** Time spent in the full model since it last started, and its mean top-of-atmosphere imbalance. */
   private fullTime = 0;
   private netAnn = 0;
@@ -752,15 +754,33 @@ export class TerrestrialClimate {
     // The model tier follows the *typical* step length, with hysteresis. Background worlds get
     // steps of uneven length (they share a CPU budget), and flipping between the seasonal and
     // the band model from one step to the next mixes a seasonal state with annual-mean physics.
-    const r = this.dtTypical > 0 ? dt / this.dtTypical : 0;
-    this.dtTypical = r > 0.125 && r < 8 ? this.dtTypical * Math.pow(r, 0.15) : dt;
-    const simple = this.dtTypical > SIMPLE_DT * (this.mode === 'simple' ? 0.6 : 1.5) || dt > 4 * SIMPLE_DT;
-    if (!simple && dt > SEASONAL_MAX_DT) {
-      // Seasonal steps stay short enough to resolve the seasons (longer ones lose sea ice).
-      const n = Math.ceil(dt / SEASONAL_MAX_DT);
-      for (let s = 0; s < n; s++) this.step(dt / n, { ...ctx, time: ctx.time - ((n - 1 - s) * dt) / n });
-      this.dtTypical = Math.max(this.dtTypical, dt);
-      return;
+    let simple = false;
+    if (!this.subStepping) {
+      const r = this.dtTypical > 0 ? dt / this.dtTypical : 0;
+      const outlier = !(r > 0.125 && r < 8);
+      if (this.dtTypical === 0 || (outlier && this.outliers >= 1)) {
+        // A new time speed (two very different steps in a row): follow it at once.
+        this.dtTypical = dt;
+        this.outliers = 0;
+      } else if (outlier) this.outliers++; // a lone odd step (a skipped frame) changes nothing
+      else {
+        this.dtTypical *= Math.pow(r, 0.15);
+        this.outliers = 0;
+      }
+      simple = this.dtTypical > SIMPLE_DT * (this.mode === 'simple' ? 0.6 : 1.5);
+      // Seasonal steps stay short enough to resolve the seasons (longer ones lose sea ice), but
+      // a step too long to split affordably belongs to the band model.
+      const n = Math.min(6, Math.ceil(dt / SEASONAL_MAX_DT));
+      if (!simple && dt / n > SIMPLE_DT) simple = true;
+      if (!simple && n > 1) {
+        this.subStepping = true;
+        try {
+          for (let s = 0; s < n; s++) this.step(dt / n, { ...ctx, time: ctx.time - ((n - 1 - s) * dt) / n });
+        } finally {
+          this.subStepping = false;
+        }
+        return;
+      }
     }
     if (simple) {
       this.stepSimple(dt, ctx);
@@ -1234,6 +1254,16 @@ export class TerrestrialClimate {
   }
 
   /**
+   * Thin-air worlds swing hot by day and very cold by night, so their time-mean temperature
+   * sits below the energy-balance (flux-mean) temperature — ~4% on Mars, ~14% on the Moon.
+   */
+  private diurnalFactor(ctx: ClimateContext, P: number): number {
+    const synod = Number.isFinite(ctx.synodicDay) ? Math.abs(ctx.synodicDay) : 0;
+    const longDay = synod > 0 ? (synod < 88_560 ? Math.sqrt(synod / 88_560) : 1 + 2.1 * clamp(Math.log10(synod / 88_560) / Math.log10(709 / 24.6), 0, 1)) : 0;
+    return 1 - 0.045 * longDay * (1 - smoothstep(1e3, 3e4, P));
+  }
+
+  /**
    * Fast latitude-band energy-balance model for high time warp: annual-mean sunlight,
    * implicit meridional transport, diagnostic ice and water vapour, long-term geochemistry.
    * Cell fields are rebuilt from band temperatures plus frozen regional anomalies.
@@ -1271,16 +1301,20 @@ export class TerrestrialClimate {
       // that hemisphere's winter into the long-term state); the global mean stays as it is now.
       let src: Float64Array = this.Ts;
       const wasSimple = this.mode === 'simple';
-      if (wasSimple && this.simpleAdj && this.simpleAdjT0 && this.simpleAdj.length !== nB) {
+      if (this.simpleAdj && this.simpleAdjT0 && this.simpleAdj.length !== nB) {
         // Resolution changed: carry the flux adjustment over to the new bands.
         const re = (v: Float64Array) => Float64Array.from({ length: nB }, (_, b) => v[Math.min(v.length - 1, Math.floor(((b + 0.5) / nB) * v.length))]);
         this.simpleAdj = re(this.simpleAdj);
         this.simpleAdjT0 = re(this.simpleAdjT0);
-      } else if (!wasSimple) {
-        this.simpleAdj = this.simpleAdjT0 = null;
+      }
+      if (!wasSimple) {
         const orbit = Number.isFinite(ctx.orbitPeriod) && ctx.orbitPeriod > 0 ? ctx.orbitPeriod : YEAR;
-        // Only a full model that has run long enough knows its own mean state.
-        this.adjNet = !this.spinningUp && this.fullTime > 1.5 * orbit ? clamp(this.netAnn, -20, 20) : null;
+        // Only a full model that has run long enough knows its own mean state; after a shorter
+        // visit to it the previous adjustment still stands.
+        if (!this.spinningUp && this.fullTime > 1.5 * orbit) {
+          this.simpleAdj = this.simpleAdjT0 = null;
+          this.adjNet = clamp(this.netAnn, -20, 20);
+        } else this.adjNet = null;
       }
       if (!wasSimple) {
         let mNow = 0,
@@ -1305,6 +1339,16 @@ export class TerrestrialClimate {
         mA[band[k]] += this.anom[k] * grid.cellArea[Math.floor(k / nLon)];
       }
       for (let k = 0; k < N; k++) this.anom[k] -= mA[band[k]] / (bArea[band[k]] || 1);
+      if (!wasSimple) {
+        // Band temperatures are energy-balance (flux-mean) values; on thin-air worlds the land's
+        // time-mean temperature sits below them (see `diurnal` below), so convert on the way in.
+        const dia = this.diurnalFactor(ctx, this.P);
+        if (dia < 1) {
+          const f = new Float64Array(nB);
+          for (let k = 0; k < N; k++) f[band[k]] += (this.ocean[k] > 0.5 ? 1 : dia) * grid.cellArea[Math.floor(k / nLon)];
+          for (let b = 0; b < nB; b++) if (bArea[b] > 0) bT[b] /= f[b] / bArea[b];
+        }
+      }
       this.simpleT = bT.slice();
     } else bT.set(this.simpleT);
     this.mode = 'simple';
@@ -1543,9 +1587,7 @@ export class TerrestrialClimate {
     // Thin-air worlds swing hot by day and very cold by night, so their time-mean temperature
     // sits well below the energy-balance (flux-mean) temperature of the band — ~4% on Mars,
     // ~14% on the Moon. Thick air (and oceans) even the cycle out.
-    const synod = Number.isFinite(ctx.synodicDay) ? Math.abs(ctx.synodicDay) : 0;
-    const longDay = synod > 0 ? (synod < 88_560 ? Math.sqrt(synod / 88_560) : 1 + 2.1 * clamp(Math.log10(synod / 88_560) / Math.log10(709 / 24.6), 0, 1)) : 0;
-    const diurnal = 1 - 0.045 * longDay * (1 - smoothstep(1e3, 3e4, P));
+    const diurnal = this.diurnalFactor(ctx, P);
     // Rebuild cell fields.
     for (let k = 0; k < N; k++) {
       const j = Math.floor(k / nLon);
