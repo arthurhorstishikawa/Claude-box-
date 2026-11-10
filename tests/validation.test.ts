@@ -103,4 +103,38 @@ describe('validation: the climate does not depend on the time step', () => {
     const seasonal = run(YEAR / 48, 4);
     expect(Math.abs(weather - seasonal), `weather ${weather.toFixed(1)} K vs seasonal ${seasonal.toFixed(1)} K`).toBeLessThan(3);
   });
+
+  const advance = (c: ReturnType<typeof spinUp>, t0: number, years: number, dtOf: (i: number) => number) => {
+    let t = t0,
+      i = 0,
+      sum = 0,
+      n = 0;
+    while (t < t0 + years * YEAR) {
+      const dt = dtOf(i++);
+      c.step(dt, ctxFor(EARTH, [illum(EARTH, ((t / YEAR) % 1) * 2 * Math.PI, -((t / DAY) % 1) * 2 * Math.PI)], t));
+      t += dt;
+      if (t > t0 + (years - 3) * YEAR) {
+        sum += c.stats.meanT * dt;
+        n += dt;
+      }
+    }
+    return { t, T: sum / n };
+  };
+
+  it('switching to the fast band model continues from the same climate', () => {
+    const c = spinUp(EARTH, 6);
+    const a = advance(c, 0, 25, () => YEAR / 30);
+    const b = advance(c, a.t, 300, () => YEAR);
+    expect(c.mode).toBe('simple');
+    expect(Math.abs(b.T - a.T), `seasonal ${a.T.toFixed(1)} K → band model ${b.T.toFixed(1)} K`).toBeLessThan(1.5);
+  });
+
+  it('uneven step lengths (background worlds at high speed) do not freeze Earth', () => {
+    const c = spinUp(EARTH, 6);
+    const a = advance(c, 0, 25, () => YEAR / 30);
+    // Steps from 12 to 98 days in a shuffled order: straddles the seasonal / band-model boundary.
+    const b = advance(c, a.t, 200, (i) => 12.2 * (1 + ((i * 7919) % 8)) * DAY);
+    expect(c.stats.iceFrac).toBeLessThan(0.25);
+    expect(Math.abs(b.T - a.T), `even steps ${a.T.toFixed(1)} K vs uneven ${b.T.toFixed(1)} K`).toBeLessThan(3);
+  });
 });

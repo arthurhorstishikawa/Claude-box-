@@ -112,11 +112,16 @@ pressure anomaly.
 * **Consistency across time speeds**: the three model tiers share one calibration, and the
   step-size dependent pieces are corrected for (the sun moves across the sky within long steps,
   evaporation uses day-averaged sunlight, vapour is transported before it condenses, the band
-  model has its own cloud diagnosis and equilibrium sea ice). `tests/validation.test.ts` holds
+  model has its own cloud diagnosis and equilibrium sea ice). The tier follows the *typical*
+  step length with hysteresis, long seasonal steps are split so the seasons stay resolved, and
+  when the band model takes over from the full model it starts from the annual-mean pattern
+  and carries a per-band flux adjustment, so warping time continues the same climate instead
+  of drifting to the band model's own. `tests/validation.test.ts` holds
   the Solar System to reference values (Earth's temperature, albedo, greenhouse effect, cloud
   cover, rainfall and ice; Venus, Mars, Titan, the Moon, Mercury, the Galilean moons, the
   giants; Io's tidal heat; precession; lunar recession) and checks that half-day and week-long
-  steps agree.
+  steps agree, that the hand-over to the band model keeps the temperature, and that uneven
+  step lengths do not ratchet the planet into an ice age.
 * **Weather systems**: tropical cyclones (genesis over warm oceans, potential intensity,
   steering, landfall decay, hypercanes on hot worlds), extratropical cyclones in baroclinic
   zones, Martian dust storms, long-lived gas-giant vortices.

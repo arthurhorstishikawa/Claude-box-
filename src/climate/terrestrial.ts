@@ -29,6 +29,8 @@ export type ClimateResolution = 'low' | 'medium' | 'high' | 'ultra';
 export type ClimateMode = 'weather' | 'seasonal' | 'simple';
 /** Steps longer than this use the simple latitude-band model. */
 export const SIMPLE_DT = 45 * 86_400;
+/** Longest single step of the seasonal tier; longer ones are split. */
+const SEASONAL_MAX_DT = 20 * 86_400;
 export const RES_NLAT: Record<ClimateResolution, number> = { low: 24, medium: 36, high: 48, ultra: 64 };
 
 const BARREN_ALBEDO: Record<TerrainStyle, [number, number]> = {
@@ -315,6 +317,18 @@ export class TerrestrialClimate {
   private hostileYears = 0;
   /** Fast-model runaway greenhouse state (with hysteresis). */
   private runawayLatch = false;
+  /** Running (geometric) mean of recent step lengths: picks the model tier. */
+  private dtTypical = 0;
+  /** Time spent in the full model since it last started, and its mean top-of-atmosphere imbalance. */
+  private fullTime = 0;
+  private netAnn = 0;
+  /**
+   * Flux adjustment of the band model (W/m² per band) and the band temperatures it was taken at:
+   * makes the band model continue from the full model's climate instead of drifting to its own.
+   */
+  private simpleAdj: Float64Array | null = null;
+  private simpleAdjT0: Float64Array | null = null;
+  private adjNet: number | null = null;
   /** Years spent (in good conditions) in the current stage of evolution. */
   lifeProgress = 0;
   /** Continental drift elapsed (Myr) and the amount the current terrain reflects. */
@@ -735,12 +749,29 @@ export class TerrestrialClimate {
 
   step(dt: number, ctx: ClimateContext): void {
     if (!(dt > 0)) return;
-    if (dt > SIMPLE_DT) {
+    // The model tier follows the *typical* step length, with hysteresis. Background worlds get
+    // steps of uneven length (they share a CPU budget), and flipping between the seasonal and
+    // the band model from one step to the next mixes a seasonal state with annual-mean physics.
+    const r = this.dtTypical > 0 ? dt / this.dtTypical : 0;
+    this.dtTypical = r > 0.125 && r < 8 ? this.dtTypical * Math.pow(r, 0.15) : dt;
+    const simple = this.dtTypical > SIMPLE_DT * (this.mode === 'simple' ? 0.6 : 1.5) || dt > 4 * SIMPLE_DT;
+    if (!simple && dt > SEASONAL_MAX_DT) {
+      // Seasonal steps stay short enough to resolve the seasons (longer ones lose sea ice).
+      const n = Math.ceil(dt / SEASONAL_MAX_DT);
+      for (let s = 0; s < n; s++) this.step(dt / n, { ...ctx, time: ctx.time - ((n - 1 - s) * dt) / n });
+      this.dtTypical = Math.max(this.dtTypical, dt);
+      return;
+    }
+    if (simple) {
       this.stepSimple(dt, ctx);
       this.evolveLife(dt);
       this.randomEruptions(dt, ctx);
       this.drift(dt, ctx);
       return;
+    }
+    if (this.mode === 'simple') {
+      this.fullTime = 0;
+      this.netAnn = 0;
     }
     this.mode = dt <= 86_400 ? 'weather' : 'seasonal';
     const { grid, vol } = this;
@@ -1148,6 +1179,14 @@ export class TerrestrialClimate {
 
     // 9. Climatology, sea level, statistics.
     this.updateClimatology(dt);
+    if (!this.spinningUp) {
+      // Mean energy imbalance of the planet over the last couple of years.
+      let net = 0;
+      for (let j = 0; j < nLat; j++) for (let i = 0; i < nLon; i++) net += (this.asr[j * nLon + i] - this.olr[j * nLon + i]) * grid.cellArea[j];
+      const tauN = 2 * (Number.isFinite(ctx.orbitPeriod) && ctx.orbitPeriod > 0 ? ctx.orbitPeriod : YEAR);
+      this.fullTime += dt;
+      this.netAnn += (net - this.netAnn) * (1 - Math.exp(-dt / Math.min(this.fullTime, tauN)));
+    }
     this.updateSeaLevel();
     this.bulk = bulkFromMasses(this.gas, R, g);
     this.computeStats(ctx, this.bulk, tauSum, dt);
@@ -1227,10 +1266,42 @@ export class TerrestrialClimate {
     for (let b = 0; b < nB; b++) bT[b] = bArea[b] > 0 ? bT[b] / bArea[b] : 250;
     if (this.mode !== 'simple' || !this.simpleT || this.simpleT.length !== nB) {
       // Entering simple mode: remember each cell's offset from its band mean (land/sea, altitude),
-      // with zero band-mean so the anomalies carry no energy.
+      // with zero band-mean so the anomalies carry no energy. The pattern comes from the running
+      // annual mean, not from whatever season it happens to be (a winter snapshot would freeze
+      // that hemisphere's winter into the long-term state); the global mean stays as it is now.
+      let src: Float64Array = this.Ts;
+      const wasSimple = this.mode === 'simple';
+      if (wasSimple && this.simpleAdj && this.simpleAdjT0 && this.simpleAdj.length !== nB) {
+        // Resolution changed: carry the flux adjustment over to the new bands.
+        const re = (v: Float64Array) => Float64Array.from({ length: nB }, (_, b) => v[Math.min(v.length - 1, Math.floor(((b + 0.5) / nB) * v.length))]);
+        this.simpleAdj = re(this.simpleAdj);
+        this.simpleAdjT0 = re(this.simpleAdjT0);
+      } else if (!wasSimple) {
+        this.simpleAdj = this.simpleAdjT0 = null;
+        const orbit = Number.isFinite(ctx.orbitPeriod) && ctx.orbitPeriod > 0 ? ctx.orbitPeriod : YEAR;
+        // Only a full model that has run long enough knows its own mean state.
+        this.adjNet = !this.spinningUp && this.fullTime > 1.5 * orbit ? clamp(this.netAnn, -20, 20) : null;
+      }
+      if (!wasSimple) {
+        let mNow = 0,
+          mAnn = 0,
+          aTot = 0;
+        for (let b = 0; b < nB; b++) {
+          mNow += bT[b] * bArea[b];
+          aTot += bArea[b];
+        }
+        for (let k = 0; k < N; k++) mAnn += this.tAnnual[k] * grid.cellArea[Math.floor(k / nLon)];
+        const off = (mNow - mAnn) / (aTot || 1);
+        if (Math.abs(off) < 8) {
+          src = this.tAnnual;
+          bT.fill(0);
+          for (let k = 0; k < N; k++) bT[band[k]] += (this.tAnnual[k] + off) * grid.cellArea[Math.floor(k / nLon)];
+          for (let b = 0; b < nB; b++) bT[b] = bArea[b] > 0 ? bT[b] / bArea[b] : 250;
+        }
+      }
       const mA = new Float64Array(nB);
       for (let k = 0; k < N; k++) {
-        this.anom[k] = clamp(this.Ts[k] - bT[band[k]], -25, 25);
+        this.anom[k] = clamp(src[k] - bT[band[k]], -25, 25);
         mA[band[k]] += this.anom[k] * grid.cellArea[Math.floor(k / nLon)];
       }
       for (let k = 0; k < N; k++) this.anom[k] -= mA[band[k]] / (bArea[band[k]] || 1);
@@ -1389,6 +1460,25 @@ export class TerrestrialClimate {
         bb[b] = C + B + gn + gs;
         r[b] = C * bT[b] + asrB[b] + ctx.internalHeat - O + B * T;
       }
+      if (pass === 0 && this.adjNet !== null) {
+        // First step after the full model: choose the adjustment so that the band model, in the
+        // state the full model left, warms or cools only as fast as the full model was doing.
+        const adj = new Float64Array(nB);
+        for (let b = 0; b < nB; b++) {
+          const tr = (b > 0 ? -a[b] * (bT[b - 1] - bT[b]) : 0) + (b < nB - 1 ? -c[b] * (bT[b + 1] - bT[b]) : 0);
+          adj[b] = clamp(this.adjNet - (asrB[b] + ctx.internalHeat - olrB[b] + tr), -60, 60);
+        }
+        this.simpleAdj = adj;
+        this.simpleAdjT0 = bT.slice();
+        this.adjNet = null;
+      }
+      if (this.simpleAdj && this.simpleAdjT0 && this.simpleAdj.length === nB) {
+        // The adjustment fades as the climate moves far from where it was calibrated.
+        for (let b = 0; b < nB; b++) {
+          const d = (bT[b] - this.simpleAdjT0[b]) / 25;
+          r[b] += this.simpleAdj[b] * Math.exp(-d * d);
+        }
+      }
       // Tridiagonal solve.
       const gam = new Float64Array(nB);
       let bet = bb[0];
@@ -1488,7 +1578,14 @@ export class TerrestrialClimate {
           } else if (this.Ts[k] > Tf + 2) this.snow[k] *= Math.exp(-dt / (3e3 * YEAR));
         }
         // Conductive equilibrium: the shell thickens until it carries just the heat from below.
-        this.seaIce[k] = this.ocean[k] > 0 ? (this.Ts[k] < Tf ? Math.min(1e5, Math.max(2, (2.2 * (Tf - this.Ts[k])) / (ctx.internalHeat + 0.05 + 2 * bOpen))) : 0) : 0;
+        // It cannot grow faster than conduction through the ice already there freezes new ice
+        // (Stefan's law), which matters when a step is only weeks long.
+        if (this.ocean[k] > 0 && this.Ts[k] < Tf) {
+          const dTi = Tf - this.Ts[k];
+          const hEq = Math.min(1e5, Math.max(2, (2.2 * dTi) / (ctx.internalHeat + 0.05 + 2 * bOpen)));
+          const h0 = this.seaIce[k];
+          this.seaIce[k] = Math.min(hEq, Math.max(h0 > hEq ? hEq : h0, Math.sqrt(h0 * h0 + (2 * 2.2 * dTi * dt) / (vol.rhoIce * vol.Lfus))));
+        } else this.seaIce[k] = 0;
       }
       if (frostGas && Tfrost > 0) {
         const cellA = grid.cellArea[j] * A;
