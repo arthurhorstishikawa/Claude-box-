@@ -54,6 +54,13 @@ and issue commands.
   vaporised ocean water, and dust/soot "impact winters" for large events. Planet-scale impacts
   resurface the world into a magma ocean. Craters are saved with the system.
 * Tidal heating (Io-style) feeds a planet's internal heat flux; tidal locking is supported.
+* **Tidal evolution**: tides raised on the primary move its satellites (outward when they
+  orbit slower than the primary spins, inward otherwise) and exchange angular momentum with
+  the primary's spin: the Moon recedes at a few cm/yr and Earth's day lengthens. Stellar mass
+  loss widens orbits adiabatically in both gravity modes.
+* **Giant impacts make moons**: an oblique collision between a rocky planet and a body of at
+  least 2% of its mass leaves part of the debris in orbit as a new moon and resets the planet's
+  spin from the impact's angular momentum.
 * Mass–radius relations per class (rocky, ice giant, gas giant, brown dwarf, star, white
   dwarf, neutron star, black hole). Gaining mass can turn a gas giant into a brown dwarf or
   ignite it as a star.
@@ -102,6 +109,14 @@ pressure anomaly.
   soil moisture, runoff, and **sea level from water conservation** (ice ages expose land
   bridges). Titan runs a methane cycle with the same machinery. Mars-style CO₂ frost caps and
   seasonal pressure cycles, Pluto/Triton N₂ frost, atmospheric collapse.
+* **Consistency across time speeds**: the three model tiers share one calibration, and the
+  step-size dependent pieces are corrected for (the sun moves across the sky within long steps,
+  evaporation uses day-averaged sunlight, vapour is transported before it condenses, the band
+  model has its own cloud diagnosis and equilibrium sea ice). `tests/validation.test.ts` holds
+  the Solar System to reference values (Earth's temperature, albedo, greenhouse effect, cloud
+  cover, rainfall and ice; Venus, Mars, Titan, the Moon, Mercury, the Galilean moons, the
+  giants; Io's tidal heat; precession; lunar recession) and checks that half-day and week-long
+  steps agree.
 * **Weather systems**: tropical cyclones (genesis over warm oceans, potential intensity,
   steering, landfall decay, hypercanes on hot worlds), extratropical cyclones in baroclinic
   zones, Martian dust storms, long-lived gas-giant vortices.

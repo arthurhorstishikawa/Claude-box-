@@ -14,7 +14,7 @@ import { GasGiantClimate, giantIntrinsicTemp } from '../climate/gasGiant';
 import type { Illuminator } from '../climate/insolation';
 import { TerrestrialClimate, type ClimateResolution } from '../climate/terrestrial';
 import { craterScaling } from '../climate/terrain';
-import { refreshStar } from './factory';
+import { makeRocky, refreshStar } from './factory';
 import { CivAgency } from './civilizations';
 import type { Scenario } from './scenarios';
 
@@ -425,6 +425,7 @@ export class Simulation {
       const a = o.a;
       const power = 10.5 * k2Q * ((G * p.mass * p.mass * Math.pow(b.radius, 5) * n * e * e) / Math.pow(a, 6));
       b.tidalHeat = Math.min(1e4, power / (4 * Math.PI * b.radius * b.radius));
+      this.tidalMigration(b, p, a, o.e, n, o.W, dt);
       // Tidal locking progress.
       if (!b.tidallyLocked && b.rotationPeriod !== 0) {
         const w = Math.abs(TWO_PI / b.rotationPeriod);
@@ -439,6 +440,53 @@ export class Simulation {
         }
       }
     }
+  }
+
+  private tideAcc = new Map<number, number>();
+  /**
+   * Tidal orbital evolution. The tide a satellite raises on its primary is carried ahead of
+   * (or behind) it by the primary's spin, so the orbit slowly widens if the primary spins
+   * faster than the satellite orbits — the Moon recedes ~2 cm/yr while Earth's day lengthens —
+   * and decays if it spins slower (a Phobos spirals in until it is torn into a ring).
+   * Angular momentum is exchanged with the primary's spin.
+   */
+  private tidalMigration(b: Body, p: Body, a: number, e: number, n: number, W: V3, dt: number): void {
+    if (dt <= 0 || b.mass > 0.3 * p.mass) return;
+    const k2Q = p.star ? 3e-8 : p.isGiant ? 2e-5 : 0.012;
+    const spin = Number.isFinite(p.rotationPeriod) && p.rotationPeriod !== 0 ? (TWO_PI / p.rotationPeriod) * p.spinAxis.dot(W) : 0;
+    const sign = Math.sign(spin - n);
+    if (sign === 0) return;
+    const rate = sign * 3 * k2Q * (b.mass / p.mass) * Math.pow(p.radius / a, 5) * n; // (da/dt)/a
+    const frac = clamp(rate * dt, -0.02, 0.02);
+    const acc = (this.tideAcc.get(b.id) ?? 0) + frac;
+    if (Math.abs(acc) < 1e-6) {
+      this.tideAcc.set(b.id, acc);
+      return;
+    }
+    this.tideAcc.set(b.id, 0);
+    this.rescaleOrbit(b, p, 1 + acc, 1 / Math.sqrt(1 + acc));
+    if (this.mode === 'kepler') this.keplerDirty = true;
+    // Spin of the primary: orbital angular momentum gained is spin angular momentum lost.
+    if (!p.tidallyLocked && !p.star) {
+      const dL = 0.5 * acc * b.mass * Math.sqrt(G * p.mass * a * Math.max(1 - e * e, 0.01));
+      const I = (p.isGiant ? 0.25 : 0.33) * p.mass * p.radius * p.radius;
+      const w0 = TWO_PI / p.rotationPeriod;
+      const w1 = w0 - (Math.sign(w0) * dL * Math.sign(p.spinAxis.dot(W) * w0 || 1)) / I;
+      if (Math.sign(w1) === Math.sign(w0) && Math.abs(w1) > 1e-9) p.rotationPeriod = TWO_PI / w1;
+    }
+  }
+
+  /** Scale b's orbit around p (distance × fr, speed × fv), carrying b's own satellites along. */
+  private rescaleOrbit(b: Body, p: Body, fr: number, fv: number): void {
+    const dr = V3.sub(b.pos, p.pos).scale(fr - 1);
+    const dv = V3.sub(b.vel, p.vel).scale(fv - 1);
+    for (const m of this.bodies) {
+      if (m === b || !this.isUnder(m, b)) continue;
+      m.pos.add(dr);
+      m.vel.add(dv);
+    }
+    b.pos.add(dr);
+    b.vel.add(dv);
   }
 
   /**
@@ -559,24 +607,9 @@ export class Simulation {
   /** Expand the orbits of everything orbiting `star` as if its mass loss were slow. */
   private adiabaticMassLoss(star: Body, before: number): void {
     const f = before / star.mass; // > 1
-    if (this.mode === 'kepler') return; // KeplerSystem.adjustMasses applies a ∝ 1/M every step
-    const below = (b: Body): boolean => {
-      for (let x = this.primaryOf(b), n = 0; x && n < 8; x = this.primaryOf(x), n++) if (x === star) return true;
-      return false;
-    };
-    for (const b of this.bodies) {
-      if (b === star || this.primaryOf(b) !== star) continue;
-      const dr = V3.sub(b.pos, star.pos).scale(f - 1);
-      const dv = V3.sub(b.vel, star.vel).scale(1 / f - 1);
-      // Move the planet together with its moons.
-      for (const m of this.bodies) {
-        if (m === b || (m !== b && !below(m)) || !this.isUnder(m, b)) continue;
-        m.pos.add(dr);
-        m.vel.add(dv);
-      }
-      b.pos.add(dr);
-      b.vel.add(dv);
-    }
+    // Applied to the state vectors in both gravity modes; analytic orbits are rebuilt from them.
+    if (this.mode === 'kepler') this.keplerDirty = true;
+    for (const b of this.bodies) if (b !== star && this.primaryOf(b) === star) this.rescaleOrbit(b, star, f, 1 / f);
   }
 
   private isUnder(m: Body, p: Body): boolean {
@@ -702,8 +735,30 @@ export class Simulation {
     big.mass = m;
     big.pos.copy(pos);
     big.vel.copy(vel);
+    // An oblique giant impact throws mantle debris into orbit, which gathers into a moon just
+    // outside the Roche limit (how Earth's Moon is thought to have formed). The merged planet
+    // is left spinning fast in the same sense, so tides then push the new moon outward.
+    const Lvec = V3.sub(small.pos, big.pos).cross(relV);
+    const oblique = Lvec.len() / Math.max(relV.len() * (big.radius + small.radius), 1);
+    const formsMoon = ratio >= 0.02 && !big.isGiant && oblique > 0.25 && m > 1e22 && this.bodies.length < 200;
     this.removeBody(small);
     this.bodyChanged(big);
+    if (formsMoon) {
+      const mMoon = clamp(0.12 * small.mass * oblique, 1e-4 * m, 0.03 * m);
+      const axis = Lvec.clone().normalize();
+      big.mass -= mMoon;
+      big.setSpinAxis(axis);
+      big.rotationPeriod = 5 * 3600;
+      this.bodyChanged(big);
+      const moon = makeRocky({ name: `${big.name}'s moon`, mass: mMoon, rotationHours: 20, terrain: 'moonlike', seed: Math.floor(this.rng.range(1, 1e9)), initialTemp: 1400, internalHeat: 0.5, tidallyLocked: true, color: '#b8b5ae' });
+      const a = 3.2 * big.radius;
+      const u = V3.perpendicular(axis);
+      moon.pos.copy(big.pos).addScaled(u, a);
+      moon.vel.copy(big.vel).addScaled(axis.cross(u).normalize(), Math.sqrt((G * big.mass) / a));
+      moon.setSpinAxis(axis);
+      this.addBody(moon);
+      this.notify(`Debris from the impact has gathered into a moon of ${big.name} (${sig(mMoon / 7.342e22, 2)} lunar masses).`, 'success', moon.id);
+    }
   }
 
   // ------------------------------------------------------------------ light & climate

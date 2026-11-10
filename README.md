@@ -42,6 +42,15 @@ civilization industrialize — and watch the climate respond.
   ships at 3% of light speed to other star systems — tick *Add a second star system* in
   ✨ Create, or load the *Reaching the stars* scenario.
 - **Stars that live**: red dwarfs flare (rare superflares slowly erode close-in atmospheres).
+- **Checked against the real Solar System**: a validation suite holds Earth (288 K, albedo
+  0.30, 33 K of greenhouse warming, ~60% cloud, ~2.7 mm of rain a day), Venus, Mars, Titan,
+  the Moon, Mercury, the Galilean moons and the giant planets to reference values, and checks
+  that the climate comes out the same whether time runs slowly or fast.
+- **Tides and giant impacts**: tides heat Io, lock close-in worlds, push the Moon outward by
+  centimetres a year and lengthen the day; a glancing planet-sized impact leaves a moon behind.
+- **Launch anything**: arm a toolbox item and *drag* to throw it — a preview line shows the
+  orbit (or the escape, or the crash) before you let go. A plain click still gives a circular
+  orbit.
 - **Impacts** release energy, heat the atmosphere, loft dust (impact winter) and **carve
   craters** into the procedural terrain.
 - **Procedural worlds**: every surface — continents, plate boundaries, volcanoes, ice shells,
@@ -78,6 +87,7 @@ and outlast the brightening Sun.
 | --- | --- |
 | Drag / wheel / pinch | Orbit and zoom (zoom all the way in to land) |
 | Double-click a body | Focus it |
+| Toolbox item, then click / drag | Place on a circular orbit / launch with your own velocity |
 | `L` | Land / take off (dive into a gas giant) |
 | `W A S D`, `Q` `E`, `Shift` | Fly over a surface (`Shift` = fast) |
 | `Space` | Pause (climb, when flying) |

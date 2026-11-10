@@ -137,7 +137,7 @@ const ADVECT = 0.1;
  */
 export const CLOUD = { sw: 0.3, lw: 0.29, rh0: 0.4, max: 0.9 };
 /** Fast-mode (band model) heat transport relative to the full model's, fitted so both give the same equator-to-pole contrast and ice cover. */
-const SIMPLE_TRANSPORT = 0.8;
+const SIMPLE_TRANSPORT = 0.9;
 
 /** Radiative weight of cloud in air holding a vapour column w (kg/m²): thin when very dry. */
 const thinCloud = (w: number) => 0.35 + 0.65 * smoothstep(0.02, 1.0, w);

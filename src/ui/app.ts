@@ -282,6 +282,7 @@ export class App {
       canvas.setPointerCapture(e.pointerId);
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       down = { x: e.clientX, y: e.clientY, moved: false, id: e.pointerId };
+      this.launch = this.armed && pointers.size === 1 ? this.launchStart(e.clientX, e.clientY) : null;
       if (pointers.size === 2) {
         const [a, b] = [...pointers.values()];
         pinch = Math.hypot(a.x - b.x, a.y - b.y);
@@ -303,11 +304,15 @@ export class App {
         return;
       }
       if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) down.moved = true;
-      if (down?.moved) this.r.cam.drag(dx, dy);
+      if (down?.moved && this.launch) this.launchDrag(e.clientX, e.clientY);
+      else if (down?.moved) this.r.cam.drag(dx, dy);
     });
     const up = (e: PointerEvent) => {
       pointers.delete(e.pointerId);
-      if (down && !down.moved && down.id === e.pointerId) this.click(e.clientX, e.clientY, e.shiftKey);
+      if (down && down.moved && this.launch && this.armed && down.id === e.pointerId) this.launchRelease(e.shiftKey);
+      else if (down && !down.moved && down.id === e.pointerId) this.click(e.clientX, e.clientY, e.shiftKey);
+      this.launch = null;
+      this.r.setLaunchPreview(null);
       down = null;
       pinch = 0;
     };
@@ -357,6 +362,62 @@ export class App {
     });
   }
 
+  // ------------------------------------------------------------------ drag to launch
+
+  private launch: { p: V3; primary: Body | null; vel: V3 } | null = null;
+
+  /** The body that dominates gravity at a point (for a new body of mass m). */
+  private attractorAt(p: V3, m: number): Body | null {
+    let best: Body | null = null,
+      bestA = 0;
+    for (const o of this.sim.bodies) {
+      const a = o.mass / Math.max(o.pos.distTo(p), 1) ** 2;
+      if (a > bestA && o.mass > m) {
+        bestA = a;
+        best = o;
+      }
+    }
+    return best;
+  }
+
+  private launchStart(x: number, y: number): { p: V3; primary: Body | null; vel: V3 } | null {
+    const focus = this.sim.focus();
+    const p = this.r.planePoint(x, y, focus ? focus.pos : new V3());
+    if (!p || !this.armed) return null;
+    return { p, primary: this.attractorAt(p, 0), vel: new V3() };
+  }
+
+  /** Dragging sets the velocity: the arrow's length relative to the distance from the attractor. */
+  private launchDrag(x: number, y: number): void {
+    const L = this.launch;
+    if (!L) return;
+    const focus = this.sim.focus();
+    const q = this.r.planePoint(x, y, focus ? focus.pos : new V3());
+    if (!q) return;
+    const d = V3.sub(q, L.p);
+    const pr = L.primary;
+    const r = pr ? L.p.distTo(pr.pos) : 1e11;
+    const vc = pr ? Math.sqrt((G * pr.mass) / r) : 1e4;
+    // An arrow as long as 40% of the distance to the attractor means circular-orbit speed.
+    L.vel = d.clone().scale(vc / (0.4 * r));
+    this.r.setLaunchPreview({ from: L.p, vel: L.vel, primary: pr });
+    const v = L.vel.len();
+    let fate = 'drifts freely';
+    if (pr) {
+      const o = orbitFromState(V3.sub(L.p, pr.pos), L.vel, G * pr.mass, 0);
+      if (o.e >= 1) fate = `escapes ${pr.name}`;
+      else if (o.a * (1 - o.e) < pr.radius) fate = `hits ${pr.name}`;
+      else fate = `orbits ${pr.name}: e = ${o.e.toFixed(2)}, period ${fmtDuration(orbitPeriod(o))}`;
+    }
+    this.hintEl.textContent = `Launch at ${sig(v / 1e3, 3)} km/s (${sig(v / vc, 2)}× circular speed) — ${fate}. Release to place.`;
+  }
+
+  private launchRelease(keepArmed: boolean): void {
+    const L = this.launch;
+    if (!L || !this.armed) return;
+    this.place(this.armed, 0, 0, keepArmed, L);
+  }
+
   private click(x: number, y: number, keepArmed = false): void {
     if (this.impactor) {
       const target = this.r.pick(x, y);
@@ -393,7 +454,7 @@ export class App {
     this.armed = t;
     card.classList.add('active');
     this.r.renderer.domElement.classList.add('placing');
-    this.hintEl.textContent = `Click in space to place a ${t.label}. It starts on a circular orbit around the strongest attractor there. Esc to cancel.`;
+    this.hintEl.textContent = `Click in space to place a ${t.label} on a circular orbit — or drag to launch it with your own speed and direction (a preview shows where it will go). Esc to cancel.`;
     this.hintEl.classList.remove('hidden');
   }
 
@@ -415,46 +476,42 @@ export class App {
     this.hintEl.classList.add('hidden');
   }
 
-  /** Place a body from a template where the click ray meets the focus body's orbital plane. Shift keeps the tool armed. */
-  private place(t: Template, x: number, y: number, keepArmed = false): void {
+  /**
+   * Place a body from a template where the click ray meets the focus body's orbital plane.
+   * A plain click puts it on a circular orbit around the strongest attractor there; a drag
+   * (`launch`) gives it the velocity you drew. Shift keeps the tool armed.
+   */
+  private place(t: Template, x: number, y: number, keepArmed = false, launch: { p: V3; primary: Body | null; vel: V3 } | null = null): void {
     const focus = this.sim.focus();
-    const through = focus ? focus.pos : new V3();
-    const p = this.r.planePoint(x, y, through);
+    const p = launch ? launch.p : this.r.planePoint(x, y, focus ? focus.pos : new V3());
     if (!p) {
       this.toast('Click on the orbital plane (not toward the horizon).', 'warn');
       return;
     }
     const b = t.make();
     b.pos.copy(p);
-    // Strongest attractor at that point.
-    let best: Body | null = null;
-    let bestA = 0;
-    for (const o of this.sim.bodies) {
-      const d = o.pos.distTo(p);
-      if (d < o.radius * 1.5) {
+    for (const o of this.sim.bodies)
+      if (o.pos.distTo(p) < o.radius * 1.5) {
         this.toast('Too close to another body.', 'warn');
         return;
       }
-      const a = o.mass / (d * d);
-      if (a > bestA && o.mass > b.mass) {
-        bestA = a;
-        best = o;
-      }
-    }
+    const best = this.attractorAt(p, b.mass);
     if (best) {
       const r = V3.sub(p, best.pos);
-      const speed = Math.sqrt((G * (best.mass + b.mass)) / r.len());
-      const tdir = new V3(0, 0, 1).cross(r).normalize();
-      b.vel.copy(best.vel).addScaled(tdir, speed);
+      if (launch) b.vel.copy(best.vel).add(launch.vel);
+      else {
+        const speed = Math.sqrt((G * (best.mass + b.mass)) / r.len());
+        b.vel.copy(best.vel).addScaled(new V3(0, 0, 1).cross(r).normalize(), speed);
+      }
       if (b.tidallyLocked) b.setSpinAxis(new V3(0, 0, 1));
       else b.setSpinAxis(V3.rotate(new V3(0, 0, 1), new V3(1, 0, 0), (Math.random() * 30 * Math.PI) / 180));
-    }
+    } else if (launch) b.vel.copy(launch.vel);
     let n = 1;
     const base = b.name;
     while (this.sim.bodies.some((o) => o.name === b.name)) b.name = `${base} ${++n}`;
     this.sim.addBody(b);
     this.select(b.id);
-    this.toast(`${b.name} added${best ? ` orbiting ${best.name}` : ''}.`, 'success', b.id);
+    this.toast(`${b.name} ${launch ? 'launched' : 'added'}${best ? (launch ? ` near ${best.name}` : ` orbiting ${best.name}`) : ''}.`, 'success', b.id);
     if (!keepArmed) this.disarm();
   }
 
@@ -467,7 +524,11 @@ export class App {
     const dir = toCam.clone().addScaled(side, (Math.random() - 0.5) * 0.8).normalize();
     const start = target.radius * 2.5 + radius * 3;
     imp.pos.copy(target.pos).addScaled(dir, start);
-    imp.vel.copy(target.vel).addScaled(dir, -2e4);
+    // Planet-sized impactors arrive off-centre: a glancing giant impact can form a moon.
+    if (radius > 1e6) imp.pos.addScaled(side, 0.65 * (target.radius + radius));
+    // Asteroids and comets arrive at 20 km/s; planet-sized bodies at just over escape speed.
+    const vImp = radius > 1e6 ? 1.1 * Math.sqrt((2 * G * (target.mass + mass)) / (target.radius + radius)) : 2e4;
+    imp.vel.copy(target.vel).addScaled(dir, -vImp);
     this.sim.addBody(imp);
     if (this.sim.speed > 600) this.sim.speed = 60;
     this.syncSpeedSlider();
@@ -1706,6 +1767,7 @@ export class App {
           h('kbd', null, 'O / N'), h('span', null, 'Toggle orbits / names'),
           h('kbd', null, 'Del'), h('span', null, 'Delete the selected body'),
           h('kbd', null, 'Esc'), h('span', null, 'Cancel a placement tool'),
+          h('kbd', null, 'Place + drag'), h('span', null, 'With a toolbox item armed: click = circular orbit, drag = launch at your own speed and direction (the green line is the predicted path)'),
           h('kbd', null, '✨ Create'), h('span', null, 'Generate a star system around any star — even a brown dwarf'),
           h('kbd', null, '✎ Design'), h('span', null, 'Build a planet by hand: mass, orbit, air, water, terrain, life'),
         ),
@@ -1714,6 +1776,8 @@ export class App {
           h('li', null, 'Push Earth toward the Sun (Edit → orbit) and watch the oceans boil away.'),
           h('li', null, 'Add CO₂ and engineered gases to Mars, then speed time up.'),
           h('li', null, 'Fire a 10 km asteroid at Earth: crater, fireball, impact winter.'),
+          h('li', null, 'Hit a rocky planet with a Mars-sized body at a glancing angle: the debris gathers into a moon.'),
+          h('li', null, 'Run the Earth & Moon for a few million years: tides push the Moon outward and the day gets longer.'),
           h('li', null, 'Jump the Sun to the red-giant phase from the Star tab.'),
           h('li', null, 'Land on Titan, or dive into Jupiter’s cloud decks.'),
           h('li', null, 'Switch to Realistic brightness, fly close to the Sun — then look at the night side of a planet.'),

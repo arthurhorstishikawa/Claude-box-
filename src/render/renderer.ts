@@ -241,6 +241,7 @@ export class Renderer {
     this.updateMarkers(camPos);
     this.updateHZ(camPos, lights);
     this.updateVoyages(camPos);
+    this.updatePreview(camPos);
     this.updateEffects(camPos, dt);
     const fv = focus ? this.views.get(focus.id) : null;
     this.wind.update(fv instanceof RockyView && view.wind ? fv : null, focus, camPos, dt, this.realTime);
@@ -399,6 +400,45 @@ export class Renderer {
       el.style.transform = `translate(${x + Math.min(pxR, 200) * 0.7 + 8}px, ${y - 8}px)`;
       el.classList.toggle('focus', important);
     }
+  }
+
+  // ------------------------------------------------------------------ launch preview
+
+  private preview: { from: V3; vel: V3; primary: Body | null } | null = null;
+  private previewLine: THREE.Line | null = null;
+  private previewArrow: THREE.Line | null = null;
+  /** Show (or hide with null) the predicted path of a body about to be launched. */
+  setLaunchPreview(p: { from: V3; vel: V3; primary: Body | null } | null): void {
+    this.preview = p;
+  }
+  private updatePreview(camPos: V3): void {
+    if (!this.previewLine) {
+      this.previewLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x8bf0c3, transparent: true, opacity: 0.9, depthWrite: false, depthTest: false }));
+      this.previewArrow = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffffff, depthWrite: false, depthTest: false }));
+      for (const l of [this.previewLine, this.previewArrow]) {
+        l.frustumCulled = false;
+        l.renderOrder = 20;
+        this.overlay.add(l);
+      }
+    }
+    const p = this.preview;
+    this.previewLine.visible = this.previewArrow!.visible = !!p;
+    if (!p) return;
+    const pts: THREE.Vector3[] = [];
+    const pr = p.primary;
+    if (pr && p.vel.len() > 0) {
+      const o = orbitFromState(V3.sub(p.from, pr.pos), p.vel, G * pr.mass, 0);
+      const reach = Math.max(p.from.distTo(pr.pos) * 12, 1);
+      for (const q of orbitPoints(o, 240, reach)) pts.push(rel(V3.add(pr.pos, q), camPos));
+    } else {
+      pts.push(rel(p.from, camPos), rel(p.from.clone().addScaled(p.vel, 3e7), camPos));
+    }
+    this.previewLine.geometry.setFromPoints(pts);
+    // Arrow from the launch point along the velocity (same scale the drag uses).
+    const r = pr ? p.from.distTo(pr.pos) : 1e11;
+    const vc = pr ? Math.sqrt((G * pr.mass) / r) : 1e4;
+    const tip = p.from.clone().addScaled(p.vel, (0.4 * r) / vc);
+    this.previewArrow!.geometry.setFromPoints([rel(p.from, camPos), rel(tip, camPos)]);
   }
 
   // ------------------------------------------------------------------ colony ships

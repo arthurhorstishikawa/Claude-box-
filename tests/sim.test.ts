@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DAY, YEAR } from '../src/core/constants';
 import { V3 } from '../src/core/vec3';
 import { TerrestrialClimate } from '../src/climate/terrestrial';
-import { makeSmallBody } from '../src/sim/factory';
+import { makeRocky, makeSmallBody } from '../src/sim/factory';
 import { findScenario } from '../src/sim/scenarios';
 import { loadSim, serializeSim } from '../src/sim/save';
 import { Simulation } from '../src/sim/simulation';
@@ -58,5 +58,34 @@ describe('simulation', () => {
     const e2 = sim2.bodies.find((b) => b.name === 'Earth')!;
     expect(e2.pos.distTo(e1.pos)).toBeLessThan(1);
     expect(Math.abs((e2.climate as TerrestrialClimate).stats.meanT - (e1.climate as TerrestrialClimate).stats.meanT)).toBeLessThan(15);
+  });
+});
+
+describe('giant impacts', () => {
+  it('a glancing planet-sized impact leaves a moon in orbit', () => {
+    const sim = new Simulation();
+    sim.settings.civilizations = false;
+    sim.loadScenario(findScenario('earthmoon'));
+    const earth = sim.bodies.find((b) => b.name === 'Earth')!;
+    sim.removeBody(sim.bodies.find((b) => b.name === 'Moon')!);
+    const theia = makeRocky({ name: 'Theia', mass: 6.4e23, rotationHours: 10, terrain: 'marslike', seed: 5, initialTemp: 250 });
+    sim.initBody(theia);
+    const dir = new V3(1, 0, 0);
+    const side = new V3(0, 1, 0);
+    theia.pos.copy(earth.pos).addScaled(dir, earth.radius * 2.5 + theia.radius * 3).addScaled(side, 0.65 * (earth.radius + theia.radius));
+    theia.vel.copy(earth.vel).addScaled(dir, -1.1 * Math.sqrt((2 * 6.674e-11 * (earth.mass + theia.mass)) / (earth.radius + theia.radius)));
+    sim.addBody(theia);
+    sim.speed = 600;
+    for (let i = 0; i < 900 && sim.bodies.includes(theia); i++) sim.update(1 / 30);
+    expect(sim.bodies.includes(theia)).toBe(false);
+    const moon = sim.bodies.find((b) => /moon/.test(b.name));
+    expect(moon, 'a moon formed').toBeTruthy();
+    expect(moon!.mass).toBeGreaterThan(1e21);
+    // It is bound to the merged planet and stays in orbit.
+    sim.speed = 3600;
+    for (let i = 0; i < 300; i++) sim.update(1 / 30);
+    expect(sim.bodies.includes(moon!)).toBe(true);
+    expect(sim.primaryOf(moon!)).toBe(earth);
+    expect(moon!.pos.distTo(earth.pos)).toBeLessThan(earth.radius * 8);
   });
 });
