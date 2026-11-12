@@ -69,6 +69,8 @@ export class Civilization {
   autoPolicy = true;
   /** Mean temperature when the civilization was founded (warming reference, K). */
   baseT = 0;
+  /** The empire this civilization belongs to (0 = none yet; see sim/empires). */
+  empire = 0;
   /** Soot from a nuclear war, handed to the climate on the next step. */
   private soot = 0;
   private rng: Rng;
@@ -266,6 +268,7 @@ export class Civilization {
       geoengineering: this.geoengineering,
       autoPolicy: this.autoPolicy,
       baseT: this.baseT,
+      empire: this.empire,
     };
   }
 
@@ -285,6 +288,7 @@ export class Civilization {
     this.geoengineering = o.geoengineering ?? 0;
     this.autoPolicy = o.autoPolicy ?? true;
     this.baseT = o.baseT ?? 0;
+    this.empire = o.empire ?? 0;
   }
 
   void(): void {

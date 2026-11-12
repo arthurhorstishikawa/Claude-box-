@@ -141,7 +141,11 @@ export class EyeAdaptation {
     this.starTarget = clamp(Math.min(0.18 / L, fromHighlights) * Math.pow(2, view.ev), 1.5e-6, 3e5);
     const brighter = this.target < this.exposure;
     // Clipped highlights: we only know the scene is brighter than measured — adapt fast.
-    const tau = this.clipped ? 0.12 : brighter ? 0.45 : 2.8;
+    // Light adaptation takes a fraction of a second. Dark adaptation has two stages, as in the
+    // eye: cones recover within seconds, then rods slowly take over for night vision (half an
+    // hour in reality, compressed to ~10 s here).
+    const rodStage = this.exposure > 300;
+    const tau = this.clipped ? 0.12 : brighter ? 0.45 : rodStage ? 6 : 2.2;
     const a = 1 - Math.exp(-dt / tau);
     this.exposure = Math.exp(Math.log(this.exposure) + (Math.log(this.target) - Math.log(this.exposure)) * a);
     // Dark adaptation for faint stars is slow (minutes in reality; seconds here).

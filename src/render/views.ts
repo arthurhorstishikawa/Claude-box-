@@ -45,6 +45,8 @@ export interface FrameCtx {
   pixelScale: number;
   /** Set when the camera stands/flies on a body's surface. */
   surface: { bodyId: number; lat: number; lon: number; aboveGround: number } | null;
+  /** Sunlight reflected by the brightest moon or planet as seen from `body` (only near the camera). */
+  moonlight: (body: Body) => { dir: V3; flux: number; color: [number, number, number] } | null;
   /** Bodies that may eclipse the main star as seen from `body` (largest first). */
   occluders: (body: Body) => { body: Body; atm: number }[];
 }
@@ -104,14 +106,22 @@ export function setLights(u: Record<string, THREE.IUniform>, body: Body, ctx: Fr
     })
     .sort((a, b) => b.flux - a.flux)
     .slice(0, 2);
-  u.uNumSuns.value = list.length;
-  list.forEach((x, i) => {
+  const all: { dir: THREE.Vector3; flux: number; color: [number, number, number] }[] = list.map((x) => ({ dir: x.dir, flux: x.flux, color: x.l.color }));
+  // Moonlight: a moon (or a planet, seen from its moon) is the night side's main light. Only for
+  // the world the camera is at, and only when a slot is free (it costs a second light everywhere).
+  if (all.length < 2 && ctx.realistic) {
+    const m = ctx.moonlight(body);
+    if (m) all.push({ dir: toThree(m.dir), flux: m.flux, color: m.color });
+  }
+  u.uNumSuns.value = all.length;
+  all.forEach((x, i) => {
     (u.uSunDir.value as THREE.Vector3[])[i].copy(x.dir);
     const s = ctx.realistic ? (x.flux / 1361) * ctx.exposure : Math.pow(x.flux / 1361, 0.33) * 1.1;
-    (u.uSunRadiance.value as THREE.Vector3[])[i].set(x.l.color[0] * s, x.l.color[1] * s, x.l.color[2] * s);
+    (u.uSunRadiance.value as THREE.Vector3[])[i].set(x.color[0] * s, x.color[1] * s, x.color[2] * s);
   });
   if (u.uAmbient) {
-    const a = ctx.realistic ? 2e-9 * ctx.exposure : 0.035;
+    // Starlight plus airglow: ~0.002 lux on a moonless night, 2·10⁻⁸ of full sunlight.
+    const a = ctx.realistic ? 2e-8 * ctx.exposure : 0.035;
     (u.uAmbient.value as THREE.Vector3).set(a * 0.8, a * 0.85, a);
   }
   if (u.uExposure) u.uExposure.value = ctx.realistic ? ctx.exposure : 1;
@@ -291,7 +301,10 @@ export class RockyView extends BodyView {
     if (dust > 0.05) mieAlb = new THREE.Vector3(0.95, 0.68, 0.45);
     if (haze > 0.1) mieAlb = new THREE.Vector3(0.95, 0.62, 0.22);
     if (deck > 0.1) mieAlb = new THREE.Vector3(0.98, 0.93, 0.78);
-    const top = R + Math.min(Math.max(10 * Hr, 6 * Hm), R * 0.5);
+    // Draw the air up to where it is too thin to see edge-on (tangential optical depth ~0.002):
+    // thick atmospheres reach many scale heights higher and look fuzzy-edged from space.
+    const tangent = (beta0: number, H: number) => H * Math.log(Math.max((beta0 * Math.sqrt(2 * Math.PI * R * H)) / 0.002, 1));
+    const top = R + Math.min(Math.max(10 * Hr, 6 * Hm, tangent(betaR.z, Hr), tangent(bm, Hm)), R * 0.5);
     return { betaR, betaM, mieAlb, Hr, Hm, top, has: true, g, deck };
   }
 
@@ -481,7 +494,12 @@ export class RockyView extends BodyView {
     const sf = ctx.surface;
     if (c && sf && sf.bodyId === b.id && sf.aboveGround < 1500 && c.lifeStage >= 3 && c.biosphere) {
       this.trees.update(c, sf.lat, sf.lon, R, (la, lo) => this.heightAt(la, lo), sea > -1e8 ? sea : -1e9);
-      this.trees.light((u.uSunDir.value as THREE.Vector3[])[0], (u.uSunRadiance.value as THREE.Vector3[])[0]);
+      const tu = this.trees.uniforms;
+      setLights(tu, b, ctx);
+      setAtmo(tu);
+      tu.uHasAtm.value = ap.has ? 1 : 0;
+      // Cloud shade, as on the ground beneath them.
+      tu.uShadow.value = ap.has ? 1 - 0.45 * c.grid.sample(c.cloud, sf.lat, sf.lon) : 1;
     } else this.trees.hide();
     this.atmo.visible = ap.has;
     if (ap.has) {

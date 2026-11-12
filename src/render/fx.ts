@@ -5,7 +5,7 @@ import { V3 } from '../core/vec3';
 import type { Body } from '../physics/body';
 import { plantPigment } from '../climate/life';
 import type { TerrestrialClimate } from '../climate/terrestrial';
-import { LOGDEPTH_F, LOGDEPTH_PARS_F, LOGDEPTH_PARS_V, LOGDEPTH_V } from './glsl';
+import { LOGDEPTH_F, LOGDEPTH_PARS_F, LOGDEPTH_PARS_V, LOGDEPTH_V, SCATTER_GLSL } from './glsl';
 import { toThree } from './units';
 
 /** Local east/north/up axes (render frame) at a point on a body. */
@@ -160,7 +160,7 @@ export class GroundWeather {
 const TREE_VS = /* glsl */ `
   ${LOGDEPTH_PARS_V}
   attribute float part;
-  varying vec3 vN; varying float vPart; varying vec3 vCol;
+  varying vec3 vN; varying float vPart; varying vec3 vCol; varying vec3 vWorld;
   void main(){
     vPart = part;
     #ifdef USE_INSTANCING_COLOR
@@ -170,17 +170,51 @@ const TREE_VS = /* glsl */ `
     #endif
     mat4 m = modelMatrix * instanceMatrix;
     vN = normalize(mat3(m) * normal);
-    gl_Position = projectionMatrix * viewMatrix * m * vec4(position, 1.0);
+    vec4 w = m * vec4(position, 1.0);
+    vWorld = w.xyz;
+    gl_Position = projectionMatrix * viewMatrix * w;
     ${LOGDEPTH_V}
   }`;
+// Lit exactly like the ground around them: no sun below the horizon, sunlight reddened by the
+// air, blue skylight only while the sky is lit, starlight/airglow at night, aerial perspective.
 const TREE_FS = /* glsl */ `
+  #include <common>
   ${LOGDEPTH_PARS_F}
-  uniform vec3 uSunDir; uniform vec3 uSunRad; uniform vec3 uLeaf; uniform vec3 uSky;
-  varying vec3 vN; varying float vPart; varying vec3 vCol;
+  ${SCATTER_GLSL}
+  uniform vec3 uPlanetCenter; uniform vec3 uLeaf; uniform vec3 uAmbient; uniform float uHasAtm; uniform float uShadow;
+  varying vec3 vN; varying float vPart; varying vec3 vCol; varying vec3 vWorld;
   void main(){
     vec3 alb = mix(vec3(0.09, 0.06, 0.04), uLeaf * vCol, step(0.5, vPart));
-    float ndl = max(dot(normalize(vN), uSunDir), 0.0) * 0.75 + 0.25 * max(dot(normalize(vN), uSunDir) * 0.5 + 0.5, 0.0);
-    gl_FragColor = vec4(alb * (uSunRad * ndl + uSky), 1.0);
+    vec3 N = normalize(vN);
+    vec3 G = normalize(vWorld - uPlanetCenter);
+    vec3 V = normalize(vWorld);
+    float tauZ = uBetaR.b * uHr + uBetaM.r * uHm;
+    vec3 skyTint = mix(vec3(0.45, 0.62, 1.0), uMieAlbedo, clamp(uBetaM.r * uHm / max(tauZ, 1e-9), 0.0, 1.0));
+    float skyAmt = uHasAtm * 0.35 * (1.0 - exp(-tauZ));
+    vec3 col = vec3(0.0);
+    for (int s = 0; s < 2; s++) {
+      if (s >= uNumSuns) break;
+      vec3 L = uSunDir[s];
+      float cosG = dot(G, L);
+      float horizon = smoothstep(-0.03, 0.05, cosG);
+      vec3 rad = uSunRadiance[s];
+      if (uHasAtm > 0.5) {
+        vec2 od = lightDepth(vWorld - uPlanetCenter, L);
+        rad *= sunTrans(od);
+      }
+      // Leaves pass some light through: wrapped diffuse.
+      float ndl = dot(N, L);
+      float diff = max(ndl, 0.0) * 0.8 + 0.2 * max(ndl * 0.5 + 0.5, 0.0);
+      col += alb * rad * diff * horizon * uShadow;
+      col += alb * uSunRadiance[s] * skyTint * skyAmt * smoothstep(-0.15, 0.35, cosG) * (0.6 + 0.4 * dot(N, G));
+    }
+    col += alb * uAmbient;
+    if (uHasAtm > 0.5) {
+      vec3 trans;
+      vec3 ins = atmosphere(-uPlanetCenter, V, length(vWorld), trans);
+      col = col * trans + ins;
+    }
+    gl_FragColor = vec4(col, 1.0);
     ${LOGDEPTH_F}
   }`;
 
@@ -233,7 +267,24 @@ export class TreeField {
 
   constructor() {
     this.mat = new THREE.ShaderMaterial({
-      uniforms: { uSunDir: { value: new THREE.Vector3(0, 1, 0) }, uSunRad: { value: new THREE.Vector3() }, uLeaf: { value: new THREE.Vector3(0.05, 0.14, 0.03) }, uSky: { value: new THREE.Vector3() } },
+      uniforms: {
+        uNumSuns: { value: 0 },
+        uSunDir: { value: [new THREE.Vector3(1, 0, 0), new THREE.Vector3(1, 0, 0)] },
+        uSunRadiance: { value: [new THREE.Vector3(), new THREE.Vector3()] },
+        uBetaR: { value: new THREE.Vector3() },
+        uBetaM: { value: new THREE.Vector3() },
+        uMieAlbedo: { value: new THREE.Vector3(0.9, 0.9, 0.9) },
+        uHr: { value: 8000 },
+        uHm: { value: 1200 },
+        uMieG: { value: 0.76 },
+        uAtmR: { value: 6.471e6 },
+        uGroundR: { value: 6.371e6 },
+        uPlanetCenter: { value: new THREE.Vector3() },
+        uAmbient: { value: new THREE.Vector3() },
+        uHasAtm: { value: 0 },
+        uShadow: { value: 1 },
+        uLeaf: { value: new THREE.Vector3(0.05, 0.14, 0.03) },
+      },
       vertexShader: TREE_VS,
       fragmentShader: TREE_FS,
     });
@@ -247,11 +298,9 @@ export class TreeField {
     });
   }
 
-  /** Light uniforms (render-frame sun direction and pre-exposed radiance). */
-  light(sunDir: THREE.Vector3, sunRad: THREE.Vector3): void {
-    (this.mat.uniforms.uSunDir.value as THREE.Vector3).copy(sunDir);
-    (this.mat.uniforms.uSunRad.value as THREE.Vector3).copy(sunRad);
-    (this.mat.uniforms.uSky.value as THREE.Vector3).copy(sunRad).multiplyScalar(0.18).multiply(new THREE.Vector3(0.7, 0.85, 1.1));
+  /** Uniforms shared with the ground's lighting (filled by the planet view). */
+  get uniforms(): Record<string, THREE.IUniform> {
+    return this.mat.uniforms;
   }
 
   hide(): void {
@@ -274,7 +323,7 @@ export class TreeField {
     const pig = plantPigment(c.hostTeff);
     const turn = 1 - smoothstep(276, 286, tMonth);
     const leaf = new THREE.Vector3(pig[0] + (0.3 - pig[0]) * turn * (conifer ? 0.15 : 0.9), pig[1] + (0.13 - pig[1]) * turn * (conifer ? 0.15 : 0.9), pig[2] + (0.03 - pig[2]) * turn * (conifer ? 0.15 : 0.9));
-    (this.mat.uniforms.uLeaf.value as THREE.Vector3).copy(leaf).multiplyScalar(1.6);
+    (this.mat.uniforms.uLeaf.value as THREE.Vector3).copy(leaf).multiplyScalar(1.2);
     // Anchor at the camera's ground point, oriented with the body frame (the parent).
     const cl = Math.cos(lat),
       up = new THREE.Vector3(cl * Math.cos(lon), cl * Math.sin(lon), Math.sin(lat));

@@ -123,6 +123,8 @@ input[type='text'], input[type='number'] { background: rgba(20, 28, 42, 0.9); bo
 .labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
 .label { position: absolute; left: 0; top: 0; font-size: 11.5px; color: rgba(220, 232, 250, 0.85); text-shadow: 0 1px 3px #000, 0 0 6px #000; white-space: nowrap; pointer-events: none; }
 .label.focus { color: #fff; font-weight: 600; }
+.label.flag::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 1px; margin-right: 4px; background: var(--flag); box-shadow: 0 0 3px #000; vertical-align: 0; }
+.label.war::after { content: ' ⚔'; color: #ff7466; }
 
 /* Modals */
 .modal-bg { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); display: flex; align-items: center; justify-content: center; z-index: 30; }

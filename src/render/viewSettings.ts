@@ -39,7 +39,7 @@ export const view: ViewSettings = {
   bloom: true,
   quality: 'medium',
   ev: 0,
-  adaptLimit: 1e4,
+  adaptLimit: 5e4,
 };
 
 export const viewEvents = new Emitter<{ changed: keyof ViewSettings }>();

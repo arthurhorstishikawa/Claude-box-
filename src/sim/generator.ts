@@ -49,6 +49,8 @@ export interface SystemOptions {
   belt: boolean;
   /** Add a second, independent star system this far away (light-years); 0 = none. */
   secondLy?: number;
+  /** Give the second system a temperate world with its own civilization. */
+  secondCivilization?: 'none' | 'preindustrial' | 'modern';
 }
 
 export interface GeneratedSystem {
@@ -354,7 +356,8 @@ function makeWorld(
     // A temperate world: water, nitrogen and as much CO₂ as a carbonate–silicate thermostat
     // would leave for its sunlight: the warming needed to reach ~290 K (with feedbacks), at
     // ~3 K per doubling. Deserts (little vapour) and locked worlds (cold night sides) need more.
-    const ocean = rng.chance(0.3);
+    // A civilization needs land: its home world is never a pure ocean world.
+    const ocean = rng.chance(0.3) && !(anchor && o.civilization !== 'none');
     const desert = !ocean && rng.chance(0.2);
     const dT = Math.max(0, 288 * (1 - Math.pow(Seff, 0.25)) * 1.3 + 3);
     const co2 = clamp(40 * Math.pow(2, dT / 3) * (desert ? 3 : 1) * (locked ? 3 : 1), 30, 3e5);
@@ -408,8 +411,10 @@ function makeWorld(
 export function tuneTemperate(sim: { initBody(b: Body): void }, b: Body, target?: number): void {
   if (!b.world || !(b.climate instanceof TerrestrialClimate)) return;
   const goal = target ?? (b.tidallyLocked ? 279 : 289);
+  // People must be able to breathe the result: keep CO₂ below the civilization's tolerance.
+  const people = !!(b.climate as TerrestrialClimate).civ;
   let lo = 5,
-    hi = 6e5;
+    hi = people ? 2500 : 6e5;
   let co2 = b.world.atmosphere.CO2 ?? 40;
   for (let it = 0; it < 7; it++) {
     const c = b.climate as TerrestrialClimate;
@@ -419,6 +424,7 @@ export function tuneTemperate(sim: { initBody(b: Body): void }, b: Body, target?
     if (T < goal || frozen) lo = co2;
     else hi = co2;
     co2 = Math.sqrt(lo * hi);
+    if (people && Math.abs(co2 - (b.world.atmosphere.CO2 ?? 0)) < 1) return;
     b.world.atmosphere.CO2 = co2;
     sim.initBody(b);
   }
@@ -482,8 +488,9 @@ export function randomPlanet(kind: 'rocky' | 'gas', host: Body, existing: { a: n
 }
 
 /** Wrap a generated system as a loadable scenario. */
-export function systemScenario(o: SystemOptions): Scenario & { summary: string } {
-  const sc: Scenario & { summary: string } = {
+export function systemScenario(o: SystemOptions): Scenario & { summary: string; secondFocus: string } {
+  const sc: Scenario & { summary: string; secondFocus: string } = {
+    secondFocus: '',
     id: `custom-${o.seed}`,
     name: 'Custom system',
     description: '',
@@ -496,7 +503,9 @@ export function systemScenario(o: SystemOptions): Scenario & { summary: string }
       if (o.secondLy && o.secondLy > 0) {
         // A neighbouring system on a wide mutual orbit (both systems keep their own planets).
         const rng = new Rng(o.seed * 7 + 3);
-        const g2 = generateSystem({ ...o, seed: o.seed * 31 + 7, star: 'random', planets: -1, habitable: rng.chance(0.6), civilization: 'none', secondLy: 0 }, false);
+        const civ2 = o.secondCivilization ?? 'none';
+        const g2 = generateSystem({ ...o, seed: o.seed * 31 + 7, star: civ2 !== 'none' ? 'K' : 'random', planets: -1, habitable: civ2 !== 'none' || rng.chance(0.6), life: civ2 !== 'none' || o.life, civilization: civ2, secondLy: 0 }, false);
+        if (civ2 !== 'none') sc.secondFocus = g2.focus;
         const d = o.secondLy * 9.4607e15;
         const ang = rng.range(0, 2 * Math.PI);
         const M1 = g.bodies.reduce((s, b) => s + b.mass, 0);
@@ -532,9 +541,10 @@ export function systemScenario(o: SystemOptions): Scenario & { summary: string }
       return g.bodies;
     },
     afterLoad: (sim) => {
-      if (!o.habitable) return;
-      const b = sim.bodies.find((x) => x.name === sc.focus);
-      if (b) tuneTemperate(sim, b);
+      for (const name of [o.habitable ? sc.focus : '', sc.secondFocus]) {
+        const b = name ? sim.bodies.find((x) => x.name === name) : undefined;
+        if (b) tuneTemperate(sim, b);
+      }
     },
   };
   return sc;

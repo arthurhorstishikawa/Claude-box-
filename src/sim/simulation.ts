@@ -895,6 +895,7 @@ export class Simulation {
       if (b !== focus) order.push(b);
     }
     this.rr = (this.rr + 1) % climateBodies.length;
+    let ranOther = false;
     for (const b of order) {
       const isFocus = b === focus;
       const pend = this.pending.get(b.id) ?? 0;
@@ -902,7 +903,9 @@ export class Simulation {
       if (pend < minDt && !(isFocus && realDt > 0 && dt === 0)) {
         if (!(isFocus && pend > 0 && dt === 0)) continue;
       }
-      if (!isFocus && performance.now() - t0 > this.settings.climateBudgetMs) break;
+      // The budget may be spent by the focused world alone; at least one background world
+      // still advances each frame (round-robin), or the others would never be stepped.
+      if (!isFocus && ranOther && performance.now() - t0 > this.settings.climateBudgetMs) break;
       const il = this.illuminators(b);
       if (pend <= 0) {
         // Paused: still let storms/visual clocks tick for the focused world.
@@ -937,7 +940,8 @@ export class Simulation {
         c.step(pend, this.giantContext(b, il, isFocus ? realDt : realDt * 4));
       }
       this.pending.set(b.id, 0);
-      if (performance.now() - t0 > this.settings.climateBudgetMs * 1.5) break;
+      if (!isFocus) ranOther = true;
+      if (ranOther && performance.now() - t0 > this.settings.climateBudgetMs * 1.5) break;
     }
   }
 }

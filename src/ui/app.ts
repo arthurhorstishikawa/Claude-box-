@@ -1041,9 +1041,46 @@ export class App {
       const rows: [string, string][] = [];
       for (const p of mine) rows.push(['Terraforming', `${this.sim.getBody(p.target)?.name ?? '?'} (for ${fmtDuration(this.sim.time - p.started)})`]);
       if (onMe) rows.push(['Being terraformed by', onMe.owner === 'Global civilization' ? this.sim.getBody(onMe.by)?.name ?? onMe.owner : onMe.owner]);
-      for (const v of ships) rows.push(['Colony ship', `to ${this.sim.getBody(v.toStar)?.name ?? '?'}, arrives in ${fmtDuration(Math.max(0, v.arrive - this.sim.time))}`]);
+      for (const v of ships) rows.push([v.kind === 'fleet' ? 'War fleet' : 'Colony ship', `to ${this.sim.getBody(v.toStar)?.name ?? '?'}, arrives in ${fmtDuration(Math.max(0, v.arrive - this.sim.time))}`]);
       el.appendChild(kv(rows));
     }
+    this.empireInfo(el, b);
+  }
+
+  /** The empire this world belongs to: its worlds, wars and relations. */
+  private empireInfo(el: HTMLElement, b: Body): void {
+    const book = this.sim.agency.empires;
+    const e = this.sim.agency.empireOf(b);
+    if (!e) return;
+    const hs = book.holdings();
+    const mine = hs.filter((x) => x.empire === e);
+    const swatch = (col: number) => h('span', { class: 'swatch', style: `background:#${col.toString(16).padStart(6, '0')}` });
+    el.appendChild(section('Empire'));
+    const total = hs.reduce((s, x) => s + x.strength, 0) || 1;
+    const power = mine.reduce((s, x) => s + x.strength, 0);
+    const temper = e.aggression > 0.66 ? 'warlike' : e.aggression > 0.4 ? 'assertive' : 'peaceful';
+    el.appendChild(
+      kv([
+        ['Empire', h('span', { class: 'v' }, swatch(e.color), ` ${e.name}`)],
+        ['Capital', this.sim.getBody(e.capital)?.name ?? '—'],
+        ['Worlds', `${mine.length} (${mine.map((x) => x.body.name).join(', ')})`],
+        ['Star systems', String(new Set(mine.map((x) => x.star?.id)).size)],
+        ['Population', `${sig(mine.reduce((s, x) => s + x.civ.totalPop, 0) / 1e9, 3)} billion`],
+        ['Share of power', fmtPct(power / total)],
+        ['Temperament', temper],
+        ['War-weariness', e.exhaustion < 0.05 ? 'none' : fmtPct(Math.min(1, e.exhaustion / 1.6))],
+        ['Conquests', String(e.conquests)],
+      ]),
+    );
+    const known = book.list.filter((o) => o !== e && o.alive && e.relations[o.id]);
+    if (known.length) {
+      const rows: [string, HTMLElement | string][] = known.map((o) => {
+        const r = e.relations[o.id];
+        const st = r.war ? `⚔ at war for ${fmtDuration(this.sim.time - r.since)}` : r.tension > 0.66 ? `hostile (tension ${Math.round(r.tension * 100)}%)` : r.tension > 0.33 ? `wary (tension ${Math.round(r.tension * 100)}%)` : 'at peace';
+        return [o.name, h('span', { class: 'v' }, swatch(o.color), ` ${st}`)];
+      });
+      el.appendChild(kv(rows as [string, string][]));
+    } else el.appendChild(h('div', { class: 'muted' }, 'No other empires known yet.'));
   }
 
   private lifeControls(body: HTMLElement, b: Body): void {
@@ -1090,6 +1127,35 @@ export class App {
         }),
       );
       body.appendChild(h('div', { class: 'row wrap' }, h('button', { class: 'danger', onclick: () => { civ.nuclearWar(); this.lastSelected = -1; } }, '☢ Nuclear war')));
+      // Diplomacy with the other empires this one knows.
+      const book = this.sim.agency.empires;
+      const e = this.sim.agency.empireOf(b);
+      if (e) {
+        const known = book.list.filter((o) => o !== e && o.alive && e.relations[o.id]);
+        const btns: (HTMLElement | null)[] = known.map((o) =>
+          e.relations[o.id].war
+            ? h('button', { onclick: () => { book.makePeace(e, o); this.lastSelected = -1; } }, `🕊 Make peace with ${o.name}`)
+            : h('button', { class: 'danger', onclick: () => { book.declareWar(e, o); this.lastSelected = -1; } }, `⚔ Declare war on ${o.name}`),
+        );
+        if (e.capital !== b.id)
+          btns.push(
+            h('button', {
+              title: 'This world breaks away and founds an empire of its own',
+              onclick: () => {
+                const n = book.create(b.name, b.id);
+                civ.empire = n.id;
+                civ.name = n.name;
+                book.relation(n, e).tension = 0.5 + 0.3 * e.aggression;
+                this.toast(`${b.name} has declared independence: the ${n.name} is born.`, 'warn', b.id);
+                this.lastSelected = -1;
+              },
+            }, '🏳 Declare independence'),
+          );
+        if (btns.length) {
+          body.appendChild(section('Diplomacy'));
+          body.appendChild(h('div', { class: 'row wrap' }, ...btns));
+        }
+      }
     }
   }
 
@@ -1778,6 +1844,8 @@ export class App {
           h('li', null, 'Fire a 10 km asteroid at Earth: crater, fireball, impact winter.'),
           h('li', null, 'Hit a rocky planet with a Mars-sized body at a glancing angle: the debris gathers into a moon.'),
           h('li', null, 'Run the Earth & Moon for a few million years: tides push the Moon outward and the day gets longer.'),
+          h('li', null, 'Load Rival empires and run a year per second: first contact, wars, invasion fleets and conquered worlds.'),
+          h('li', null, 'Land on Earth at night in Realistic mode: wait for your eyes to adapt — under a full Moon the landscape turns silvery blue.'),
           h('li', null, 'Jump the Sun to the red-giant phase from the Star tab.'),
           h('li', null, 'Land on Titan, or dive into Jupiter’s cloud decks.'),
           h('li', null, 'Switch to Realistic brightness, fly close to the Sun — then look at the night side of a planet.'),

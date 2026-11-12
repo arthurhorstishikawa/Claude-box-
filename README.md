@@ -41,6 +41,12 @@ civilization industrialize — and watch the climate respond.
   water, oxygen, life) and settle it, evacuate a dying home world, and finally send colony
   ships at 3% of light speed to other star systems — tick *Add a second star system* in
   ✨ Create, or load the *Reaching the stars* scenario.
+- **Empires and war**: every civilization flies an empire's flag. Empires expand from world to
+  world and star to star, meet when they share a star system, and grow wary or hostile. At war
+  they bombard and invade each other's worlds, raid terraforming stations and send war fleets
+  between the stars; worlds change hands, colonies break away, weary empires make peace and
+  beaten ones fall. Diplomacy buttons in the Life tab let you declare war or make peace
+  yourself; load *Rival empires* to watch it unfold.
 - **Stars that live**: red dwarfs flare (rare superflares slowly erode close-in atmospheres).
 - **Checked against the real Solar System**: a validation suite holds Earth (288 K, albedo
   0.30, 33 K of greenhouse warming, ~60% cloud, ~2.7 mm of rain a day), Venus, Mars, Titan,
@@ -70,14 +76,17 @@ civilization industrialize — and watch the climate respond.
   Milky Way come out), an *Enhanced* mode that keeps everything visible, Milky Way / stars /
   black backgrounds, physically based atmospheric scattering (blue skies, red sunsets,
   Martian butterscotch), volumetric clouds, landing on rocky planets and diving through gas
-  giant cloud decks.
+  giant cloud decks. At night the eye dark-adapts in two stages and switches to rod vision:
+  colours drain to a silvery blue, a full Moon lights the landscape, starlight and airglow
+  barely do. Thick atmospheres scatter light many times: they look milky and soft-edged
+  from space and veil the ground below.
 
 ## Scenarios
 
 The Solar System today, Earth & Moon, TRAPPIST-1, a Proxima b eyeball world, twin suns,
 Alpha Centauri, a hot Jupiter and lava world, Snowball Earth, Early Mars, Earth in a billion
 years, a red-giant Sun, a rogue-star flyby, a starless rogue planet, a brown-dwarf habitable
-zone, and an empty system to build from scratch. Challenges: terraform Mars, cool Venus,
+zone, Reaching the stars, Rival empires, and an empty system to build from scratch. Challenges: terraform Mars, cool Venus,
 escape Snowball Earth, keep a modern civilization below +2 °C, wake a frozen eyeball world,
 and outlast the brightening Sun.
 

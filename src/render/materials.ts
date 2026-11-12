@@ -221,7 +221,7 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
           if (uHasAtm > 0.5) {
             // Sunlight reddened by the atmosphere on its way down.
             vec2 od = lightDepth(vWorld - uPlanetCenter, L);
-            rad *= exp(-uBetaR * od.x) * hazeT(uBetaM * od.y);
+            rad *= sunTrans(od);
           }
           col += albedo * rad * ndl * horizon * shadow;
           // Skylight: hemispherical, keeps shadowed slopes from going pitch black by day.
@@ -367,7 +367,7 @@ export function makeCloudShellMaterial(): THREE.ShaderMaterial {
           float ndl = dot(N, L);
           float lit = smoothstep(-0.12, 0.25, ndl);
           vec2 od = lightDepth(vWorld - uPlanetCenter, L);
-          vec3 rad = uSunRadiance[s] * exp(-uBetaR * od.x) * hazeT(uBetaM * od.y);
+          vec3 rad = uSunRadiance[s] * sunTrans(od);
           if (s == 0) rad *= eclipse(vWorld, L);
           float silver = pow(max(dot(-V, L), 0.0), 8.0) * 0.6;
           col += uCloudColor * rad * lit * (0.75 + 0.25 * dens + silver);
@@ -563,7 +563,7 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
         for (int s = 0; s < 2; s++) {
           if (s >= uNumSuns) { sunRad[s] = vec3(0.0); continue; }
           vec2 odA = lightDepth(ro + rd * (t0 + 0.25 * L), uSunDir[s]);
-          sunRad[s] = uSunRadiance[s] * exp(-uBetaR * odA.x) * hazeT(uBetaM * odA.y);
+          sunRad[s] = uSunRadiance[s] * sunTrans(odA);
         }
         vec3 acc = vec3(0.0);
         float T = 1.0;

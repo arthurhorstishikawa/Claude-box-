@@ -65,6 +65,34 @@ export class Renderer {
   private weather: GroundWeather;
   private realTime = 0;
   selectedId: number | null = null;
+  /**
+   * Night vision (realistic mode): in dim light the eye switches from cones to rods, which see
+   * no colour and are most sensitive to blue-green (the Purkinje shift). Each pixel's absolute
+   * luminance (pre-exposed value ÷ exposure; 1 = sunlit white ≈ 3·10⁴ cd/m²) blends it from full
+   * colour (above ~1 cd/m²) to blue-grey rod vision (below ~0.005 cd/m²).
+   */
+  private nightVision = new ShaderPass({
+    uniforms: { tDiffuse: { value: null }, uExposure: { value: 1 }, uOn: { value: 0 } },
+    vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `
+      uniform sampler2D tDiffuse; uniform float uExposure; uniform float uOn; varying vec2 vUv;
+      void main(){
+        vec4 c = texture2D(tDiffuse, vUv);
+        vec3 rgb = max(c.rgb, vec3(0.0));
+        if (uOn > 0.5) {
+          vec3 xyz = mat3(0.4124, 0.2126, 0.0193, 0.3576, 0.7152, 0.1192, 0.1805, 0.0722, 0.9505) * rgb;
+          float absY = max(xyz.y, 1e-14) / uExposure;
+          float rods = 1.0 - smoothstep(-6.8, -4.3, log(absY) / 2.302585);
+          if (rods > 0.0) {
+            // Scotopic luminance (Larson et al. 1997), normalised so white keeps its brightness.
+            float V = max(xyz.y * (1.33 * (1.0 + (xyz.y + xyz.z) / max(xyz.x, 1e-12)) - 1.68), 0.0) / 2.57;
+            vec3 night = V * vec3(0.78, 0.88, 1.18) / 0.88;
+            rgb = mix(rgb, night, rods * 0.92);
+          }
+        }
+        gl_FragColor = vec4(rgb, c.a);
+      }`,
+  });
   fps = 60;
 
   constructor(private canvas: HTMLCanvasElement, private sim: Simulation, overlay: HTMLDivElement) {
@@ -96,6 +124,7 @@ export class Renderer {
     );
     this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.55, 0.92);
     this.composer.addPass(this.bloom);
+    this.composer.addPass(this.nightVision);
     this.composer.addPass(new OutputPass());
     this.markerMat = new THREE.PointsMaterial({ size: 5, sizeAttenuation: false, vertexColors: true, transparent: true, depthWrite: false, opacity: 0.9 });
     this.markers = new THREE.Points(new THREE.BufferGeometry(), this.markerMat);
@@ -199,6 +228,8 @@ export class Renderer {
         lights.push({ body: b, color: [c[0] / lum, c[1] / lum, c[2] / lum], L: b.star.L });
       }
     }
+    this.nightVision.uniforms.uOn.value = view.mode === 'realistic' ? 1 : 0;
+    this.nightVision.uniforms.uExposure.value = this.eye.exposure;
     const focus = sim.focus();
     const ctx: FrameCtx = {
       camPos,
@@ -213,6 +244,7 @@ export class Renderer {
       cameraAlt: this.cam.altitude(),
       pixelScale: this.renderer.getPixelRatio(),
       occluders: (body: Body) => this.occludersFor(body, lights),
+      moonlight: (body: Body) => this.moonlightFor(body, lights),
       surface:
         this.cam.mode === 'surface' && this.cam.target
           ? { bodyId: this.cam.target.id, lat: this.cam.lat, lon: this.cam.lon, aboveGround: this.cam.alt - (this.cam.groundHeight ? this.cam.groundHeight(this.cam.target, this.cam.lat, this.cam.lon) : 0) }
@@ -355,6 +387,15 @@ export class Renderer {
         this.labels.set(b.id, el);
       }
       if (el.textContent !== b.name) el.textContent = b.name;
+      // Inhabited worlds fly their empire's flag (⚔ while it is at war).
+      const emp = this.sim.agency.empireOf(b);
+      const flag = emp ? '#' + emp.color.toString(16).padStart(6, '0') : '';
+      if (el.dataset.flag !== flag) {
+        el.dataset.flag = flag;
+        el.style.setProperty('--flag', flag);
+        el.classList.toggle('flag', !!emp);
+      }
+      el.classList.toggle('war', !!emp && this.sim.agency.empires.atWar(emp));
       rel(b.pos, camPos, tmp);
       const dist = tmp.length();
       tmp.normalize().multiplyScalar(Math.min(dist, 1e12));
@@ -467,6 +508,12 @@ export class Renderer {
         line.frustumCulled = ship.frustumCulled = false;
         g.add(line, ship);
       }
+      // War fleets in red; colony ships in their empire's colour.
+      const emp = this.sim.agency.empires.get(v.empire);
+      const col = v.kind === 'fleet' ? 0xff4a3d : emp ? emp.color : 0x8fd8ff;
+      (line.material as THREE.LineDashedMaterial).color.setHex(col);
+      (ship.material as THREE.PointsMaterial).color.setHex(col);
+      (ship.material as THREE.PointsMaterial).size = v.kind === 'fleet' ? 9 : 7;
       const f = clamp((this.sim.time - v.depart) / Math.max(v.arrive - v.depart, 1), 0, 1);
       const o = new V3(v.origin.x, v.origin.y, v.origin.z);
       const p = o.clone().addScaled(V3.sub(to.pos, o), f);
@@ -576,6 +623,43 @@ export class Renderer {
   }
 
   /** Bodies between `body` and its brightest star that could cast a shadow on it. */
+  /**
+   * Light reflected onto `body` by its brightest neighbour (the Moon at full: ~2·10⁻⁶ of sunlight,
+   * ~0.25 lux). Lambert-sphere phase law; geometric albedo from the climate model's albedo.
+   * Only for the world the camera stands on or orbits closely.
+   */
+  private moonlightFor(body: Body, lights: LightSrc[]): { dir: V3; flux: number; color: [number, number, number] } | null {
+    if (this.sim.focusId !== body.id || this.cam.altitude() > body.radius * 4 || body.isStarLike) return null;
+    let best: { dir: V3; flux: number; color: [number, number, number] } | null = null;
+    for (const r of this.sim.bodies) {
+      if (r === body || r.isStarLike || r.radius < 1e5) continue;
+      const toR = V3.sub(r.pos, body.pos);
+      const d = toR.len();
+      if (d < r.radius + body.radius) continue;
+      // The star that lights the reflector most.
+      let star: LightSrc | null = null,
+        F = 0;
+      for (const l of lights) {
+        if (l.body === r) continue;
+        const ds = V3.sub(l.body.pos, r.pos).len();
+        const f = l.L / (4 * Math.PI * Math.max(ds * ds, 1));
+        if (f > F) {
+          F = f;
+          star = l;
+        }
+      }
+      if (!star) continue;
+      const toStar = V3.sub(star.body.pos, r.pos).normalize();
+      const toObs = V3.scaled(toR, -1 / d);
+      const alpha = Math.acos(clamp(toStar.dot(toObs), -1, 1));
+      const phase = (Math.sin(alpha) + (Math.PI - alpha) * Math.cos(alpha)) / Math.PI;
+      const bond = r.climate && 'stats' in r.climate && Number.isFinite((r.climate.stats as { albedo?: number }).albedo) ? (r.climate.stats as { albedo: number }).albedo : r.isGiant ? 0.45 : 0.12;
+      const flux = F * ((2 / 3) * bond) * Math.pow(r.radius / d, 2) * phase;
+      if (flux > (best?.flux ?? 1e-9 * 1361)) best = { dir: V3.scaled(toR, 1 / d), flux, color: [star.color[0] * 1.02, star.color[1] * 0.99, star.color[2] * 0.95] };
+    }
+    return best;
+  }
+
   private occludersFor(body: Body, lights: LightSrc[]): { body: Body; atm: number }[] {
     const main = lights.filter((l) => l.body !== body).sort((a, b) => b.L / b.body.pos.distTo(body.pos) ** 2 - a.L / a.body.pos.distTo(body.pos) ** 2)[0];
     if (!main) return [];

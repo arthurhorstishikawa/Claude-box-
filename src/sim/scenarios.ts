@@ -4,6 +4,8 @@ import { Body, resetBodyIds } from '../physics/body';
 import { eclipticFromRaDec, frameFromPole, makeGiant, makeRocky, makeSmallBody, makeStar, placeOnOrbit, setObliquity } from './factory';
 import { habitableZone } from '../stars/habitableZone';
 import { systemScenario } from './generator';
+import { TerrestrialClimate } from '../climate/terrestrial';
+import type { Empires } from './empires';
 
 export interface Scenario {
   id: string;
@@ -16,7 +18,7 @@ export interface Scenario {
   speed: number;
   build: () => Body[];
   /** Optional fix-ups once every body's climate has spun up (e.g. tuning a habitable world). */
-  afterLoad?: (sim: { initBody(b: Body): void; bodies: Body[] }) => void;
+  afterLoad?: (sim: { initBody(b: Body): void; bodies: Body[]; agency?: { empires: Empires } }) => void;
 }
 
 const EPOCH_TODAY = Date.UTC(2026, 10, 2, 0, 0, 0);
@@ -423,6 +425,38 @@ function neighborsScenario(): Scenario {
   };
 }
 SCENARIOS.splice(SCENARIOS.length - 1, 0, neighborsScenario());
+
+/** Two advanced civilizations in neighbouring star systems: expansion, contact and war. */
+function rivalsScenario(): Scenario {
+  const base = systemScenario({ seed: 1984, star: 'G', planets: 6, habitable: true, life: true, civilization: 'modern', moons: true, belt: false, secondLy: 0.3, secondCivilization: 'modern' });
+  return {
+    id: 'rivals',
+    name: 'Rival empires',
+    description:
+      'Two star systems 0.3 light-years apart, each home to an advanced civilization on the verge of interstellar flight. Speed time up (a year per second or more): they terraform and settle their neighbours, send colony ships to each other’s systems, meet — and may go to war. Watch the Life tab and the news feed.',
+    epochMs: null,
+    get focus() {
+      return base.focus;
+    },
+    speed: YEAR / 12,
+    build: () => base.build(),
+    afterLoad: (sim) => {
+      base.afterLoad?.(sim);
+      // Both civilizations are already spacefaring; one is more warlike than the other.
+      const homes = sim.bodies.filter((b) => b.climate instanceof TerrestrialClimate && !!b.climate.civ);
+      homes.forEach((b, i) => {
+        const civ = (b.climate as TerrestrialClimate).civ!;
+        civ.tech = 2.4;
+        civ.era = 'clean';
+        civ.excessCO2 = 0;
+        civ.autoPolicy = true;
+        const e = sim.agency?.empires.ensure(b, civ);
+        if (e) e.aggression = i === 0 ? 0.55 : 0.8;
+      });
+    },
+  };
+}
+SCENARIOS.splice(SCENARIOS.length - 1, 0, rivalsScenario());
 
 export function findScenario(id: string): Scenario {
   return SCENARIOS.find((s) => s.id === id) ?? SCENARIOS[0];

@@ -107,6 +107,16 @@ vec2 raySphere(vec3 ro, vec3 rd, float r){
 // diffuse part (two-stream, asymmetry g≈0.75). For thick decks (Venus, Titan) this keeps
 // the ground dimly lit instead of black.
 vec3 hazeT(vec3 tauM){ return max(exp(-tauM), 0.9 / (1.0 + 0.19 * tauM)); }
+// Sunlight reaching a point through optical depths od = (Rayleigh, Mie column). In optically
+// thick air most of the light arrives diffusely after many scatterings, and Rayleigh diffusion
+// does not redden it: a two-stream floor for the Rayleigh part (thick air only; Earth-like air
+// keeps its red sunsets from the direct beam).
+vec3 sunTrans(vec2 od){
+  vec3 tR = uBetaR * od.x;
+  float thick = smoothstep(0.4, 2.0, uBetaR.b * uHr + uBetaM.r * uHm);
+  vec3 rayleigh = max(exp(-tR), thick * 0.9 / (1.0 + 0.75 * tR));
+  return rayleigh * hazeT(uBetaM * od.y);
+}
 float phaseR(float mu){ return 3.0 / (16.0 * PI) * (1.0 + mu * mu); }
 float phaseM(float mu, float g){
   float g2 = g * g;
@@ -141,6 +151,15 @@ vec3 atmosphere(vec3 ro, vec3 rd, float tMax, out vec3 trans){
   vec2 odView = vec2(0.0);
   vec3 sumR = vec3(0.0), sumM = vec3(0.0);
   vec3 sumR2 = vec3(0.0), sumM2 = vec3(0.0);
+  // Multiple scattering (second and higher orders): an isotropic glow from the diffuse light
+  // field. It only matters in optically thick air, where it turns the sky milky and veils the
+  // ground; Earth-like air (vertical optical depth ≲ 0.4) gets none of it.
+  vec3 tauTot = uBetaR * uHr + uBetaM * uHm;
+  // Each bounce loses the absorbed part (haze absorbs blue: Titan stays orange).
+  vec3 omega = (uBetaR * uHr + uBetaM * uHm * uMieAlbedo) / max(tauTot, vec3(1e-9));
+  vec3 msGain = clamp((tauTot - 0.4) / (1.0 + tauTot), 0.0, 1.0) * 2.0 * pow(omega, vec3(4.0));
+  bool doMs = max(msGain.r, max(msGain.g, msGain.b)) > 0.0;
+  vec3 ms = vec3(0.0);
   for (int i = 0; i < STEPS; i++) {
     // Quadratic spacing: fine steps near the camera, where thick air hides everything beyond.
     float a0 = float(i) / float(STEPS), a1 = float(i + 1) / float(STEPS), am = (float(i) + 0.5) / float(STEPS);
@@ -155,6 +174,14 @@ vec3 atmosphere(vec3 ro, vec3 rd, float tMax, out vec3 trans){
       vec3 att = exp(-uBetaR * (odView.x + odL.x)) * hazeT(uBetaM * (odView.y + odL.y));
       if (s == 0) { sumR += dens.x * att; sumM += dens.y * att; }
       else { sumR2 += dens.x * att; sumM2 += dens.y * att; }
+      if (doMs) {
+        // Diffuse light at p: lit side and twilight band, dimmed by the air above (two-stream).
+        float lit = smoothstep(-0.2, 0.25, dot(normalize(p), uSunDir[s]));
+        vec3 tauAbove = uBetaR * uHr * exp(-h / uHr) + uBetaM * uHm * exp(-h / uHm);
+        vec3 diffuse = 0.9 / (1.0 + 0.75 * tauAbove);
+        vec3 viewT = exp(-(uBetaR * odView.x + uBetaM * odView.y));
+        ms += uSunRadiance[s] * lit * diffuse * viewT * (dens.x * uBetaR + dens.y * uBetaM * uMieAlbedo);
+      }
     }
   }
   trans = exp(-(uBetaR * odView.x + uBetaM * odView.y));
@@ -166,6 +193,7 @@ vec3 atmosphere(vec3 ro, vec3 rd, float tMax, out vec3 trans){
     vec3 m = s == 0 ? sumM : sumM2;
     col += uSunRadiance[s] * (r * uBetaR * phaseR(mu) + m * uBetaM * uMieAlbedo * phaseM(mu, uMieG));
   }
+  col += ms * msGain / (4.0 * PI);
   // Radiance relative to a sunlit white Lambertian surface (E/π). Single scattering misses
   // roughly a third to a half of real skylight; a constant factor stands in for higher orders.
   return col * PI * 1.6;

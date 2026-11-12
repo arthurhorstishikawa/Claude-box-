@@ -150,10 +150,22 @@ and the generated hypsometry. Any world's terrain can be re-rolled from the insp
   star surfaces at true radiance) and auto-exposure measured from the frame: approach a star and
   everything else vanishes in the glare; on a planet's night side the eye adapts and distant
   stars and the Milky Way appear. *Enhanced* mode compresses the range so everything stays visible.
+* **Night vision.** Dark adaptation has two stages (cones within seconds, then the slower rods).
+  A final pass blends each pixel from full colour to blue-grey rod vision by its absolute
+  luminance (cones fade below ~1 cd/m², rods alone below ~0.005 cd/m²; scotopic luminance after
+  Larson et al. 1997), so a moonlit landscape looks silvery-blue rather than like a dim day.
+* **Night light.** Starlight and airglow (~2·10⁻⁸ of sunlight), and moonlight: the brightest moon
+  or planet seen from the world you are on is added as a second light, with its phase (Lambert
+  sphere) and albedo: a full Moon gives ~2·10⁻⁶ of sunlight (~0.25 lux).
 * **Backgrounds:** procedural starfield + Milky Way, stars only, or pure black.
 * **Physically based atmospheric scattering** (Rayleigh + Mie single scattering, ray-marched)
   from space and from inside: blue skies, red sunsets, butterscotch Martian skies with blue
-  sunsets, orange Titan haze, aerial perspective on terrain.
+  sunsets, orange Titan haze, aerial perspective on terrain. Optically thick air adds a
+  multiple-scattering glow (an isotropic source from the diffuse light field, two-stream
+  attenuated), which turns thick atmospheres milky and veils the ground; the haze is drawn up
+  to where it is too thin to see edge-on, so thick atmospheres have soft, extended limbs.
+  Earth-like air (vertical optical depth ≲ 0.4) is unchanged. Trees, clouds and ground share
+  the same lighting (no sun below the horizon, reddened sunlight, skylight, aerial perspective).
 * **Land on rocky worlds:** quadtree LOD terrain (cube-sphere patches displaced on the GPU from the
   procedural elevation + detail noise), ocean surface, flight/walk camera near the ground.
 * **Fly into clouds:** volumetric cloud layers ray-marched from the live climate cloud field on
@@ -181,7 +193,7 @@ and the generated hypsometry. Any world's terrain can be re-rolled from the insp
 * **Scenarios**: Solar System (today), Earth & Moon, TRAPPIST-1, Proxima b eyeball world,
   twin suns, Alpha Centauri, hot Jupiter & lava world, Snowball Earth, early Mars, Earth in a
   billion years, red-giant Sun, rogue star flyby, starless rogue planet, brown-dwarf habitable
-  zone, empty system.
+  zone, reaching the stars, rival empires, empty system.
 * **Custom systems** (✨ Create): choose a star (G, K, M, ultracool, brown dwarf, F, A, white
   dwarf, close binary) and generate a planetary system: period ratios of ~1.4–2.4, rocky
   worlds inside the snow line, giants beyond it (rarer around small stars), ice giants and icy
@@ -201,6 +213,21 @@ and the generated hypsometry. Any world's terrain can be re-rolled from the insp
 * **Challenges**: terraform Mars, cool Venus, escape Snowball Earth, save Earth from the
   brightening Sun, make an eyeball world habitable. Objectives must be sustained for a
   period of simulated time.
+* **Empires and war.** Every civilization belongs to an empire (name, flag colour, capital,
+  temperament). Colonies keep their founders' flag; colonies in other star systems may declare
+  independence. Empires *present* in the same star system (worlds, or settlers terraforming in
+  orbit) make contact; tension then drifts with their temperaments, rises by a step whenever
+  one settles or terraforms in the other's system, and decays through diplomacy. Above a
+  threshold the more warlike side declares war. In war, armed worlds bombard enemy worlds of
+  the same system (casualties ∝ relative strength, dust that cools the climate, rare all-out
+  strikes = nuclear winter), raid enemy terraforming stations, and invade worlds they
+  overwhelm 4:1; interstellar empires send war fleets at 3% c, which conquer a world if 1.5×
+  stronger or are destroyed inflicting losses. Strength = population × technology. Losses
+  breed war-weariness; peace follows when both are weary, one is beaten, or after 400 years of
+  stalemate. Empires with no worlds left fall. Terraformed colonies keep steering their own
+  climate (mirrors, sunshades, CO₂ drawdown), and hopeless projects are abandoned after 3000
+  years. The Life tab shows the empire, its relations and diplomacy buttons; labels carry
+  flags (⚔ at war); fleets are drawn in red. Scenario *Rival empires*.
 * **Analysis**: weather stations (click the map), time-series charts, climate diagrams.
 * **Save/load** to browser storage and JSON files.
 
