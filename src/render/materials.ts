@@ -161,17 +161,29 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
         vec3 albedo;
         float spec = 0.0;
         float rough = 0.08;
+        float foam = 0.0;
         if (ocean) {
           float depth = uSeaLevel - elev;
           albedo = mix(uLiquidShallow, uLiquidDeep, smoothstep(5.0, 2500.0, depth));
+          // Shallow shelves: the sandy bottom shows through a few metres of clear water.
+          albedo = mix(uSand * 0.55 * uWetWorld + albedo * (1.0 - uWetWorld), albedo, smoothstep(0.5, 18.0, depth));
           float iceCov = smoothstep(0.03, 0.6, seaIce + (n1 - 0.5) * 0.25);
           albedo = mix(albedo, uSeaIceCol * (0.85 + 0.15 * n2 + micro * 0.3), iceCov);
           spec = 1.0 - iceCov;
-          // Wind waves in body-fixed coordinates; unresolved waves widen the sun glint instead.
-          float wv = aa(30000.0);
-          vec3 wn = vec3(snoise(d * 30000.0 + uTime * 0.02), snoise(d * 30000.0 + 7.0 - uTime * 0.017), snoise(d * 9000.0 + 2.0 + uTime * 0.01));
-          N = normalize(G + wn * 0.06 * spec * wv);
-          rough = mix(0.22, 0.07, wv);
+          // Wind waves in body-fixed coordinates: swell (~200 m), wind waves (~50 m) and chop
+          // (~20 m), each moving its own way and fading out before it aliases. What is not
+          // resolved widens the sun glint instead.
+          float w1 = aa(30000.0), w2 = aa(120000.0), w3 = aa(300000.0);
+          vec3 wn = vec3(snoise(d * 30000.0 + uTime * 0.02), snoise(d * 30000.0 + 7.0 - uTime * 0.017), 0.0) * w1
+                  + vec3(snoise(d * 120000.0 + 3.0 + uTime * 0.05), snoise(d * 120000.0 + 9.0 + uTime * 0.043), 0.0) * 0.6 * w2
+                  + vec3(snoise(d * 300000.0 + 5.0 - uTime * 0.09), snoise(d * 300000.0 + 11.0 + uTime * 0.08), 0.0) * 0.35 * w3;
+          vec3 te = normalize(cross(vec3(0.0, 0.0, 1.0), G) + 1e-6);
+          vec3 tn = cross(G, te);
+          N = normalize(G + (te * wn.x + tn * wn.y) * 0.07 * spec);
+          rough = mix(0.24, 0.06, max(w1, w2));
+          // Surf: breaking waves in the last few metres before the shore (close up only).
+          float surf = smoothstep(0.55, 0.8, snoise(d * 300000.0 + vec3(0.0, uTime * 0.15, 0.0)) * 0.5 + 0.5 + (1.0 - smoothstep(0.0, 3.0, depth)) * 0.6);
+          foam = surf * (1.0 - smoothstep(0.0, 6.0, depth)) * w2 * uWetWorld * spec;
         } else {
           vec3 rock = mix(uRockA, uRockB, clamp(matv + (n1 - 0.5) * 0.35, 0.0, 1.0));
           rock *= 0.85 + 0.3 * n2 + micro;
@@ -185,9 +197,14 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
           vec3 autumn = vec3(0.3, 0.13, 0.03) * (0.7 + 0.6 * n2);
           plant = mix(mix(autumn, plant, smoothstep(276.0, 286.0, Ts)), plant, 0.35 + 0.25 * n1);
           vegCov *= mix(0.45, 1.0, smoothstep(268.0, 279.0, Ts));
+          // Steep slopes and cliffs shed soil: bare rock instead of plants.
+          float slope = 1.0 - dot(N, G);
+          vegCov *= 1.0 - smoothstep(0.1, 0.28, slope);
+          // Beaches: a band of sand just above the shoreline on gentle coasts.
+          if (uHasOcean > 0.5) ground = mix(ground, uSand * (0.95 + 0.25 * n1 + micro * 0.4), uWetWorld * (1.0 - smoothstep(1.5, 7.0, elev - uSeaLevel)) * (1.0 - smoothstep(0.05, 0.15, slope)));
+          if (uHasOcean > 0.5) vegCov *= smoothstep(2.0, 8.0, elev - uSeaLevel);
           albedo = mix(ground, plant, vegCov);
           // Snow: thicker on flatter ground, patchy at the edges.
-          float slope = 1.0 - dot(N, G);
           float sc = smoothstep(4.0, 80.0, snow * (0.6 + 0.8 * n1 + micro)) * (1.0 - smoothstep(0.25, 0.6, slope) * 0.6);
           albedo = mix(albedo, uSnow * (1.0 + micro * 0.15), sc);
           albedo = mix(albedo, uFrost, smoothstep(1.0, 30.0, frost * (0.5 + n2)));
@@ -209,6 +226,11 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
         float skyAmt = uHasAtm * 0.35 * (1.0 - exp(-tauZ));
         vec3 col = vec3(0.0);
         float dayness = 0.0;
+        // Water mirrors the sky: Fresnel reflection (2% looking down, ~100% at grazing angles);
+        // the rest of the light enters the water, which is what the albedo describes.
+        vec3 Rr = reflect(V, N);
+        float Fw = spec > 0.0 ? (0.02 + 0.98 * pow(1.0 - max(dot(-V, N), 0.0), 5.0)) * spec : 0.0;
+        float upR = max(dot(Rr, G), 0.0);
         for (int s = 0; s < 2; s++) {
           if (s >= uNumSuns) break;
           vec3 L = uSunDir[s];
@@ -223,11 +245,16 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
             vec2 od = lightDepth(vWorld - uPlanetCenter, L);
             rad *= sunTrans(od);
           }
-          col += albedo * rad * ndl * horizon * shadow;
+          col += albedo * rad * ndl * horizon * shadow * (1.0 - Fw);
           // Skylight: hemispherical, keeps shadowed slopes from going pitch black by day.
-          col += albedo * uSunRadiance[s] * skyTint * skyAmt * skyLight(cosG) * (0.6 + 0.4 * dot(N, G));
+          col += albedo * uSunRadiance[s] * skyTint * skyAmt * skyLight(cosG) * (0.6 + 0.4 * dot(N, G)) * (1.0 - Fw);
           dayness = max(dayness, horizon);
           if (spec > 0.0) {
+            // Sky radiance along the reflected ray: blue, brightening toward the horizon; grey
+            // under cloud; twilight-dim after sunset; black without air.
+            vec3 skyR = uSunRadiance[s] * skyTint * skyAmt * 1.5 * skyLight(cosG) * mix(3.0, 1.0, pow(upR, 0.35));
+            skyR = mix(skyR, uSunRadiance[s] * 0.45 * skyLight(cosG) * (0.3 + 0.7 * max(cosG, 0.0)), cloud * 0.85);
+            col += skyR * Fw * uHasAtm;
             vec3 H = normalize(L - V);
             float nh = max(dot(N, H), 0.0);
             float a2 = rough * rough;
@@ -238,6 +265,16 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
           }
         }
         col += albedo * uAmbient;
+        // Surf is white water lit like the shore.
+        if (foam > 0.0) {
+          vec3 fl = vec3(0.0);
+          for (int s = 0; s < 2; s++) {
+            if (s >= uNumSuns) break;
+            float cg = dot(G, uSunDir[s]);
+            fl += uSunRadiance[s] * (max(cg, 0.0) * smoothstep(-0.03, 0.05, cg) + 0.3 * skyLight(cg) * uHasAtm);
+          }
+          col = mix(col, vec3(0.85) * fl, foam);
+        }
         // Molten rock and city lights glow on their own.
         if (Ts > 750.0) col += glowColor(Ts) * glowIntensity(Ts) * smoothstep(750.0, 1100.0, Ts) * uExposure;
         if (lights > 0.0 && uLayer == 0 && !ocean) {
@@ -437,6 +474,7 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
       uGiant: { value: 0 },
       uBodyRot: { value: new THREE.Matrix3() },
       uShellIn: { value: 6.372e6 },
+      uSteps: { value: 44 },
       uShellOut: { value: 6.382e6 },
       uScale: { value: 1 / 4000 },
       uDensity: { value: 0.02 },
@@ -470,6 +508,7 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
       uniform int uGiant;
       uniform mat3 uBodyRot; // render → body frame
       uniform float uShellIn, uShellOut, uScale, uDensity, uTime, uOpacity;
+      uniform int uSteps;
       uniform vec3 uCloudColor, uDeepColor, uAmbient;
       varying vec3 vWorld;
       bool uDetailOn = true;
@@ -553,11 +592,13 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
         }
         t1 = min(t1, t0 + (uShellOut - uShellIn) * 16.0);
         if (t1 <= t0) discard;
-        const int STEPS = 44;
+        // More steps when the camera is in or under the layer (long grazing paths band otherwise).
+        const int MAX_STEPS = 96;
+        int STEPS = uSteps;
         float L = t1 - t0;
-        // Unstructured per-pixel jitter hides step banding (a structured dither pattern showed
-        // up as swirls and speckle on dark ground).
-        float jitter = 0.5 + 0.35 * (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5);
+        // Unstructured per-pixel jitter turns step banding into fine grain (a structured dither
+        // pattern showed up as swirls and speckle on dark ground).
+        float jitter = 0.5 + 0.8 * (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5);
         // Atmospheric reddening of sunlight, evaluated once near the start of the path.
         vec3 sunRad[2];
         for (int s = 0; s < 2; s++) {
@@ -569,7 +610,8 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
         float T = 1.0;
         float tFirst = -1.0;
         float ls = (uShellOut - uShellIn) * 0.1;
-        for (int i = 0; i < STEPS; i++) {
+        for (int i = 0; i < MAX_STEPS; i++) {
+          if (i >= STEPS) break;
           // Quadratic step distribution: fine detail close to the camera, coarse far away.
           float a0 = float(i) / float(STEPS), a1 = float(i + 1) / float(STEPS);
           float am = (float(i) + jitter) / float(STEPS);

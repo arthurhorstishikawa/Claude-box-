@@ -483,6 +483,7 @@ export class RockyView extends BodyView {
       // From above, draw the shell's front faces (depth-tested against the terrain below);
       // from inside or below the layer, draw its back faces without depth test.
       const inside = alt + R < base + this.cloudTop * 1.02;
+      vu.uSteps.value = inside ? 80 : 44;
       this.volMat.side = inside ? THREE.BackSide : THREE.FrontSide;
       this.volMat.depthTest = !inside;
     }

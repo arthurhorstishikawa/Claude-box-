@@ -79,6 +79,11 @@ export class Empires {
   private nextId = 1;
   private rng = new Rng(4242);
   private quietUntil = new Map<string, number>();
+  /**
+   * Occupation forces left on conquered worlds (by body id): they add to the world's defence,
+   * fade over ~two centuries, and the world cannot change hands again while freshly occupied.
+   */
+  garrisons: Record<string, { empire: number; strength: number; since: number }> = {};
 
   constructor(private host: EmpireHost) {}
 
@@ -86,6 +91,29 @@ export class Empires {
     this.list = [];
     this.nextId = 1;
     this.quietUntil.clear();
+    this.garrisons = {};
+  }
+
+  /** Occupation troops still on a world for its current owner. */
+  garrison(b: Body, empire: Empire): number {
+    const g = this.garrisons[b.id];
+    if (!g || g.empire !== empire.id) return 0;
+    return g.strength * Math.exp(-(this.host.time - g.since) / (200 * YEAR));
+  }
+
+  /** Recently conquered worlds are still being occupied and cannot be taken again yet. */
+  private occupied(b: Body): boolean {
+    const g = this.garrisons[b.id];
+    return !!g && this.host.time - g.since < 80 * YEAR;
+  }
+
+  /**
+   * What an attacker must overcome to take `d`: the world itself (people and garrison) plus half
+   * the armed strength of its owner's other worlds in the same system, which come to its aid.
+   */
+  defence(d: Holding, all: Holding[]): number {
+    const support = all.filter((h) => h !== d && h.empire === d.empire && h.star && h.star === d.star && h.civ.tech >= 2).reduce((s, h) => s + h.strength, 0);
+    return d.strength + 0.5 * support;
   }
 
   get(id: number | undefined | null): Empire | undefined {
@@ -147,7 +175,7 @@ export class Empires {
       const civ = c?.civ;
       if (!c || !civ || civ.era === 'collapsed' || civ.totalPop + civ.seedPopulation < 1e3) continue;
       const empire = this.ensure(b, civ);
-      out.push({ body: b, c, civ, star: this.host.starOf(b), empire, strength: Empires.strength(civ) + civ.seedPopulation });
+      out.push({ body: b, c, civ, star: this.host.starOf(b), empire, strength: Empires.strength(civ) + civ.seedPopulation + this.garrison(b, empire) });
     }
     return out;
   }
@@ -298,7 +326,7 @@ export class Empires {
           this.host.notify(`💥 The ${attE.name} has devastated ${d.body.name} with an all-out strike.`, 'danger', d.body.id);
         }
         // Invasion: a far stronger, spacefaring force takes the world.
-        if (S > 4 * d.strength && Math.max(...local.map((a) => a.civ.tech)) >= 2.1 && this.rng.chance(Math.min(1, 0.05 * yr))) this.conquer(d, attE, defE);
+        if (!this.occupied(d.body) && S > 4 * this.defence(d, defs) && Math.max(...local.map((a) => a.civ.tech)) >= 2.1 && this.rng.chance(Math.min(1, 0.05 * yr))) this.conquer(d, attE, defE, 0.5 * S);
       }
     }
     // Settlers terraforming in orbit are easy targets for armed worlds of the same system.
@@ -346,8 +374,10 @@ export class Empires {
   }
 
   /** A world changes hands. */
-  conquer(d: Holding, by: Empire, from: Empire): void {
+  conquer(d: Holding, by: Empire, from: Empire, force = 0): void {
     this.casualties(d, 0.2);
+    // Part of the invading force stays to hold the world.
+    this.garrisons[d.body.id] = { empire: by.id, strength: Math.max(force, 3 * Empires.strength(d.civ)), since: this.host.time };
     d.civ.empire = by.id;
     d.civ.name = `${by.name} province`;
     // The conquerors bring their technology.
@@ -369,10 +399,12 @@ export class Empires {
       this.host.notify(`The ${A.name} war fleet reached ${star.name}, but there was no enemy left to fight.`, 'info', star.id);
       return;
     }
-    const t = targets.sort((a, b) => a.strength - b.strength)[0];
-    if (strength > 1.5 * t.strength) {
+    // Invade the world that is easiest to hold against the rest of the system.
+    const all = this.holdings();
+    const t = targets.filter((h) => !this.occupied(h.body)).sort((a, b) => this.defence(a, all) - this.defence(b, all))[0] ?? targets[0];
+    if (!this.occupied(t.body) && strength > 1.5 * this.defence(t, all)) {
       this.host.notify(`🚀⚔ ${an(A.name)} invasion fleet has arrived at ${star.name}.`, 'danger', t.body.id);
-      this.conquer(t, A, B);
+      this.conquer(t, A, B, 0.6 * strength);
     } else {
       const kill = Math.min(0.6, (0.5 * strength) / Math.max(t.strength, 1));
       this.casualties(t, kill);
@@ -405,11 +437,12 @@ export class Empires {
   }
 
   serialize(): unknown {
-    return { list: this.list, nextId: this.nextId };
+    return { list: this.list, nextId: this.nextId, garrisons: this.garrisons };
   }
 
   restore(o: any): void {
     this.list = Array.isArray(o?.list) ? o.list : [];
+    this.garrisons = o?.garrisons ?? {};
     this.nextId = o?.nextId ?? this.list.reduce((m, e) => Math.max(m, e.id + 1), 1);
     // Both empires of a pair share one relation object (JSON made two copies).
     for (const a of this.list)

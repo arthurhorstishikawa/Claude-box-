@@ -10,6 +10,14 @@ describe('empires', () => {
     sim.settings.climateQuality = 'low';
     const news: string[] = [];
     sim.events.on('notify', (n) => news.push(n.msg));
+    const falls = new Map<string, number>();
+    let flips = 0;
+    sim.events.on('notify', (n) => {
+      const m = n.msg.match(/🏴 (.*) has fallen to/);
+      if (!m) return;
+      if (falls.has(m[1]) && sim.time - falls.get(m[1])! < 100 * YEAR) flips++;
+      falls.set(m[1], sim.time);
+    });
     sim.loadScenario(findScenario('rivals'));
     const book = sim.agency.empires;
     const homes = sim.bodies.filter((b) => b.climate instanceof TerrestrialClimate && b.climate.civ);
@@ -32,6 +40,8 @@ describe('empires', () => {
     // The war was fought: stations raided, fleets sent or worlds taken.
     expect(/destroyed the .*terraforming stations|war fleet|has fallen to/.test(text), text).toBe(true);
     for (const b of homes) expect((b.climate as TerrestrialClimate).civ!.totalPop).toBeGreaterThan(1e8);
+    // Conquered worlds are held: no world changes hands twice within a century.
+    expect(flips, text).toBe(0);
     expect(book.list.filter((e) => e.alive).length).toBeGreaterThanOrEqual(2);
   }, 240e3);
 

@@ -170,6 +170,12 @@ and the generated hypsometry. Any world's terrain can be re-rolled from the insp
   to where it is too thin to see edge-on, so thick atmospheres have soft, extended limbs.
   Earth-like air (vertical optical depth ≲ 0.4) is unchanged. Trees, clouds and ground share
   the same lighting (no sun below the horizon, reddened sunlight, skylight, aerial perspective).
+* **Water and coasts:** oceans mirror the sky with Fresnel reflection (2% looking down, nearly
+  all at grazing angles; blue sky, grey overcast, dark at night), carry three octaves of
+  animated waves (swell, wind waves, chop) that fade before they alias, show sandy bottoms in
+  the shallows and surf on the last metres before the shore. Beaches line gentle coasts; steep
+  slopes and cliffs are bare rock. Volumetric clouds take more ray-march steps when seen from
+  inside or below the layer, with wider per-pixel jitter, so grazing views do not band.
 * **Land on rocky worlds:** quadtree LOD terrain (cube-sphere patches displaced on the GPU from the
   procedural elevation + detail noise), ocean surface, flight/walk camera near the ground.
 * **Fly into clouds:** volumetric cloud layers ray-marched from the live climate cloud field on
@@ -228,7 +234,10 @@ and the generated hypsometry. Any world's terrain can be re-rolled from the insp
   overwhelm 4:1; interstellar empires send war fleets at 3% c, which conquer a world if 1.5×
   stronger or are destroyed inflicting losses. Strength = population × technology. Losses
   breed war-weariness; peace follows when both are weary, one is beaten, or after 400 years of
-  stalemate. Empires with no worlds left fall. Terraformed colonies keep steering their own
+  stalemate. Empires with no worlds left fall. An invasion must overcome the whole system's
+  defence (the world plus half the armed strength of its owner's other worlds there); the
+  conquerors leave a garrison that fades over ~two centuries, and a newly occupied world cannot
+  change hands again for 80 years — so conquests stick instead of flipping back and forth. Terraformed colonies keep steering their own
   climate (mirrors, sunshades, CO₂ drawdown), and hopeless projects are abandoned after 3000
   years. The Life tab shows the empire, its relations and diplomacy buttons; labels carry
   flags (⚔ at war); fleets are drawn in red. Scenario *Rival empires*.
