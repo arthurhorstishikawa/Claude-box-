@@ -206,7 +206,7 @@ const TREE_FS = /* glsl */ `
       float ndl = dot(N, L);
       float diff = max(ndl, 0.0) * 0.8 + 0.2 * max(ndl * 0.5 + 0.5, 0.0);
       col += alb * rad * diff * horizon * uShadow;
-      col += alb * uSunRadiance[s] * skyTint * skyAmt * smoothstep(-0.15, 0.35, cosG) * (0.6 + 0.4 * dot(N, G));
+      col += alb * uSunRadiance[s] * skyTint * skyAmt * skyLight(cosG) * (0.6 + 0.4 * dot(N, G));
     }
     col += alb * uAmbient;
     if (uHasAtm > 0.5) {

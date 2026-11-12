@@ -157,6 +157,10 @@ and the generated hypsometry. Any world's terrain can be re-rolled from the insp
 * **Night light.** Starlight and airglow (~2·10⁻⁸ of sunlight), and moonlight: the brightest moon
   or planet seen from the world you are on is added as a second light, with its phase (Lambert
   sphere) and albedo: a full Moon gives ~2·10⁻⁶ of sunlight (~0.25 lux).
+* **Twilight.** After sunset the air in the planet's shadow is lit by light scattered twice in
+  the still-sunlit upper air. Sky, ground skylight and clouds follow measured twilight: the sky
+  dims ~300× from −6° to −12° solar elevation (≈1° per e-fold; zenith ~3 cd/m² at −6°, ~0.01 at
+  −12°, night by −18°), brighter toward the sunset, with the Earth's shadow rising opposite.
 * **Backgrounds:** procedural starfield + Milky Way, stars only, or pure black.
 * **Physically based atmospheric scattering** (Rayleigh + Mie single scattering, ray-marched)
   from space and from inside: blue skies, red sunsets, butterscotch Martian skies with blue

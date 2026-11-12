@@ -117,6 +117,13 @@ vec3 sunTrans(vec2 od){
   vec3 rayleigh = max(exp(-tR), thick * 0.9 / (1.0 + 0.75 * tR));
   return rayleigh * hazeT(uBetaM * od.y);
 }
+// Twilight: once the sun is below the horizon, the sky is lit by light scattered twice in the
+// still-sunlit upper air. Measured skies dim ~300× from −6° to −12° solar elevation (≈1° per
+// e-fold): zenith ~3 cd/m² at −6°, ~0.01 at −12°, night by −18°. sinE = sine of the local sun
+// elevation; the result multiplies the sunlit-sky level at sunset.
+float twilight(float sinE){ return exp(asin(clamp(sinE, -1.0, 0.0)) / 0.0184); }
+// Skylight on the ground (relative to the daytime shape): smooth by day, the twilight curve below.
+float skyLight(float sinE){ return sinE >= 0.0 ? smoothstep(-0.15, 0.35, sinE) : 0.216 * twilight(sinE); }
 float phaseR(float mu){ return 3.0 / (16.0 * PI) * (1.0 + mu * mu); }
 float phaseM(float mu, float g){
   float g2 = g * g;
@@ -160,6 +167,7 @@ vec3 atmosphere(vec3 ro, vec3 rd, float tMax, out vec3 trans){
   vec3 msGain = clamp((tauTot - 0.4) / (1.0 + tauTot), 0.0, 1.0) * 2.0 * pow(omega, vec3(4.0));
   bool doMs = max(msGain.r, max(msGain.g, msGain.b)) > 0.0;
   vec3 ms = vec3(0.0);
+  vec3 tw = vec3(0.0);
   for (int i = 0; i < STEPS; i++) {
     // Quadratic spacing: fine steps near the camera, where thick air hides everything beyond.
     float a0 = float(i) / float(STEPS), a1 = float(i + 1) / float(STEPS), am = (float(i) + 0.5) / float(STEPS);
@@ -174,6 +182,12 @@ vec3 atmosphere(vec3 ro, vec3 rd, float tMax, out vec3 trans){
       vec3 att = exp(-uBetaR * (odView.x + odL.x)) * hazeT(uBetaM * (odView.y + odL.y));
       if (s == 0) { sumR += dens.x * att; sumM += dens.y * att; }
       else { sumR2 += dens.x * att; sumM2 += dens.y * att; }
+      // Twilight glow: air in the planet's shadow, lit by the sunlit air above and toward the sun.
+      float sinE = dot(normalize(p), uSunDir[s]);
+      if (sinE < 0.02) {
+        vec3 viewTw = exp(-(uBetaR * odView.x + uBetaM * odView.y));
+        tw += uSunRadiance[s] * 0.3 * twilight(sinE) * smoothstep(0.02, -0.01, sinE) * viewTw * (dens.x * uBetaR + dens.y * uBetaM * uMieAlbedo);
+      }
       if (doMs) {
         // Diffuse light at p: lit side and twilight band, dimmed by the air above (two-stream).
         float lit = smoothstep(-0.2, 0.25, dot(normalize(p), uSunDir[s]));
@@ -194,6 +208,7 @@ vec3 atmosphere(vec3 ro, vec3 rd, float tMax, out vec3 trans){
     col += uSunRadiance[s] * (r * uBetaR * phaseR(mu) + m * uBetaM * uMieAlbedo * phaseM(mu, uMieG));
   }
   col += ms * msGain / (4.0 * PI);
+  col += tw / (4.0 * PI);
   // Radiance relative to a sunlit white Lambertian surface (E/π). Single scattering misses
   // roughly a third to a half of real skylight; a constant factor stands in for higher orders.
   return col * PI * 1.6;

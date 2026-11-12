@@ -225,7 +225,7 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
           }
           col += albedo * rad * ndl * horizon * shadow;
           // Skylight: hemispherical, keeps shadowed slopes from going pitch black by day.
-          col += albedo * uSunRadiance[s] * skyTint * skyAmt * smoothstep(-0.15, 0.35, cosG) * (0.6 + 0.4 * dot(N, G));
+          col += albedo * uSunRadiance[s] * skyTint * skyAmt * skyLight(cosG) * (0.6 + 0.4 * dot(N, G));
           dayness = max(dayness, horizon);
           if (spec > 0.0) {
             vec3 H = normalize(L - V);
@@ -605,7 +605,7 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
             float depthDark = uGiant == 1 ? mix(0.12, 1.0, smoothstep(0.0, 0.85, hh)) : (1.0 - 0.45 * exp(-dn * 6.0)) ;
             if (uGiant == 0) {
               vec3 sky = vec3(0.0);
-              for (int s = 0; s < 2; s++) { if (s >= uNumSuns) break; sky += sunRad[s] * max(dot(normalize(p), uSunDir[s]) + 0.15, 0.0); }
+              for (int s = 0; s < 2; s++) { if (s >= uNumSuns) break; float sE = dot(normalize(p), uSunDir[s]); sky += sunRad[s] * max(sE + 0.15, 0.0) + uSunRadiance[s] * 0.15 * twilight(min(sE, 0.0)) * smoothstep(0.02, -0.01, sE); }
               Lsum += sky * vec3(0.32, 0.4, 0.55) * mix(0.35, 1.0, hh);
             }
             vec3 cc = uCloudColor;
