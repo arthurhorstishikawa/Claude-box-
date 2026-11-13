@@ -277,7 +277,12 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
         }
         // Molten rock and city lights glow on their own.
         if (Ts > 750.0) col += glowColor(Ts) * glowIntensity(Ts) * smoothstep(750.0, 1100.0, Ts) * uExposure;
-        if (lights > 0.0 && uLayer == 0 && !ocean) {
+        // Land for city lights: a soft shoreline at least a pixel wide. A hard land/sea test on
+        // the bumpy fine-detail elevation flips from pixel to pixel along distant low coasts,
+        // which turned the lights there into speckle.
+        float fwE = fwidth(elev);
+        float landL = uHasOcean > 0.5 ? smoothstep(uSeaLevel - 2.0 - fwE, uSeaLevel + 8.0 + fwE, em.r + vDetail * (1.0 - smoothstep(2.0, 20.0, fwE))) : 1.0;
+        if (lights > 0.0 && uLayer == 0 && landL > 0.0) {
           // 'lights' is the fraction of land that is lit urban area. The light is gathered into
           // clusters by thresholding multi-scale noise (regions ~100 km, cities ~20 km, towns,
           // streets) so that exactly that fraction is lit. Octaves finer than a pixel drop out
@@ -292,9 +297,14 @@ export function makeTerrainMaterial(): THREE.ShaderMaterial {
           float tq = sqrt(-2.0 * log(f));
           float z = tq - (2.515517 + 0.802853 * tq + 0.010328 * tq * tq) / (1.0 + 1.432788 * tq + 0.189269 * tq * tq + 0.001308 * tq * tq * tq);
           float thr = z * sd;
-          float mask = smoothstep(thr - 0.12 * sd, thr + 0.12 * sd, p) * mix(1.0, 0.55 + 0.9 * (n4 * 0.5 + 0.5), w4 / 0.08);
-          float lit = mix(f, mask, smoothstep(0.02, 0.1, sd));
-          col += uLightsColor * lit * uLightsScale * (1.0 - dayness);
+          // Edges at least a pixel wide (the pattern's change per pixel), and where the pattern
+          // changes faster than the pixels can follow (far away, grazing angles) its mean
+          // coverage instead of aliased speckle.
+          float fw = fwidth(p);
+          float ew = max(0.12 * sd, fw);
+          float mask = smoothstep(thr - ew, thr + ew, p) * mix(1.0, 0.55 + 0.9 * (n4 * 0.5 + 0.5), w4 / 0.08);
+          float lit = mix(f, mask, smoothstep(0.02, 0.1, sd) * (1.0 - smoothstep(0.3 * sd, 1.2 * sd, fw)));
+          col += uLightsColor * lit * uLightsScale * (1.0 - dayness) * landL;
         }
         if (uHasAtm > 0.5) {
           // Aerial perspective: light lost on the way to the camera, plus light scattered into the view.
@@ -512,6 +522,9 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
       uniform vec3 uCloudColor, uDeepColor, uAmbient;
       varying vec3 vWorld;
       bool uDetailOn = true;
+      // 0 = resolve individual clouds; 1 = the step is far longer than a cloud, so use the
+      // layer's mean density (a pre-filtered field: smooth transparency instead of noise).
+      float gSoft = 0.0;
       float remap(float v, float a, float b, float c, float d){ return c + (clamp(v, a, b) - a) / max(b - a, 1e-5) * (d - c); }
       // Terrestrial clouds: billowy Perlin–Worley shapes, eroded by finer Worley detail, shaped
       // by height (flat bases, rounded tops). Wet, convective regions grow tall cumulus towers;
@@ -535,6 +548,7 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
         float thr = coverThreshold(cov, uShapeStats.x, uShapeStats.y);
         // Rounder towers: the threshold rises with height inside each cloud.
         float d = remap(base * mix(1.0, grad, 0.6), thr + 0.1 * h, 1.0, 0.0, 1.0) * grad;
+        if (gSoft > 0.0) d = mix(max(d, 0.0), cov * 0.35 * grad, gSoft);
         if (d <= 0.0 || !detail) return d;
         // Erode the edges with fine wispy detail (billows at the base, wisps at the top).
         vec3 dn = texture(uDetail, q * 5.3 + vec3(0.0, uTime * 0.004, 0.0)).rgb;
@@ -594,11 +608,13 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
         if (t1 <= t0) discard;
         // More steps when the camera is in or under the layer (long grazing paths band otherwise).
         const int MAX_STEPS = 96;
-        int STEPS = uSteps;
         float L = t1 - t0;
-        // Unstructured per-pixel jitter turns step banding into fine grain (a structured dither
-        // pattern showed up as swirls and speckle on dark ground).
-        float jitter = 0.5 + 0.8 * (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5);
+        // Long grazing paths through the layer (toward the horizon) get more steps, up to 96,
+        // instead of banding. The per-pixel jitter stays small: a wide one shows as grain, which a
+        // dark-adapted eye and bloom turn into speckle at night (a structured dither pattern
+        // showed up as swirls).
+        int STEPS = int(clamp(float(uSteps) * L / ((uShellOut - uShellIn) * 3.0), float(uSteps), float(MAX_STEPS)));
+        float jitter = 0.5 + 0.35 * (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5);
         // Atmospheric reddening of sunlight, evaluated once near the start of the path.
         vec3 sunRad[2];
         for (int s = 0; s < 2; s++) {
@@ -617,6 +633,14 @@ export function makeVolumeCloudMaterial(noise3d: THREE.Data3DTexture): THREE.Sha
           float am = (float(i) + jitter) / float(STEPS);
           float ds = (a1 * a1 - a0 * a0) * L;
           vec3 p = ro + rd * (t0 + am * am * L);
+          // Fine erosion detail only where the steps can resolve it: far along grazing paths it
+          // would be hit or missed at random from pixel to pixel, a noisy transparency that bright
+          // lights behind the clouds (cities at night) turn into speckle.
+          // Measured against the size of the clouds themselves (~1/8 of the shape-noise period;
+          // the detail noise is 5.3× finer).
+          float cloudSize = 1.0 / (uScale * 0.55 * 8.0);
+          uDetailOn = ds < cloudSize * 0.4;
+          gSoft = smoothstep(0.35, 1.5, ds / cloudSize);
           float dn = density(p);
           if (dn > 0.001) {
             float ext = dn * uDensity;

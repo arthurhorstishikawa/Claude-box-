@@ -9,7 +9,8 @@ const MW = 64,
   MH = 48;
 
 /**
- * Human-eye adaptation. The HDR frame is metered on the GPU (a 64×48 grid of taps), then
+ * Human-eye adaptation. The HDR frame is metered on the GPU (a 64×48 grid of cells, each the
+ * average of 6×6 taps), then
  * exposure adapts quickly toward brighter scenes (≈0.4 s) and slowly toward darker ones
  * (≈3 s), within the range of the human eye.
  *
@@ -51,14 +52,17 @@ export class EyeAdaptation {
       fragmentShader: /* glsl */ `
         uniform sampler2D tSrc; varying vec2 vUv;
         void main(){
-          // Two taps per cell (centre and a diagonal offset) so thin bright features are seen.
-          vec3 c0 = texture2D(tSrc, vUv).rgb;
-          vec3 c1 = texture2D(tSrc, vUv + vec2(0.25 / ${MW}.0, 0.25 / ${MH}.0)).rgb;
-          float l0 = dot(c0, vec3(0.2126, 0.7152, 0.0722));
-          float l1 = dot(c1, vec3(0.2126, 0.7152, 0.0722));
-          float l = max(l0, l1);
-          if (!(l < ${CLIP.toFixed(1)})) l = ${CLIP.toFixed(1)}; // inf / NaN / overflow
-          l = max(l, 0.0);
+          // Average 6×6 taps over the cell, so small bright things (city lights, distant
+          // fires) count in proportion to the area they cover instead of being hit or missed.
+          float l = 0.0;
+          for (int j = 0; j < 6; j++)
+            for (int i = 0; i < 6; i++) {
+              vec2 o = (vec2(float(i), float(j)) + 0.5) / 6.0 - 0.5;
+              float t = dot(texture2D(tSrc, vUv + o / vec2(${MW}.0, ${MH}.0)).rgb, vec3(0.2126, 0.7152, 0.0722));
+              if (!(t < ${CLIP.toFixed(1)})) t = ${CLIP.toFixed(1)}; // inf / NaN / overflow
+              l += max(t, 0.0);
+            }
+          l /= 36.0;
           gl_FragColor = vec4(l, 0.0, 0.0, 1.0);
         }`,
       depthTest: false,

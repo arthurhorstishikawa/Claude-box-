@@ -11,6 +11,8 @@ export interface ViewSettings {
   orbits: boolean;
   trails: boolean;
   labels: boolean;
+  /** Dots marking where planets and other bodies are when they are too small to see. */
+  markers: boolean;
   hz: boolean;
   wind: boolean;
   clouds: boolean;
@@ -32,6 +34,7 @@ export const view: ViewSettings = {
   orbits: true,
   trails: false,
   labels: true,
+  markers: true,
   hz: false,
   wind: false,
   clouds: true,

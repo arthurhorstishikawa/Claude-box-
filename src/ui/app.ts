@@ -218,7 +218,7 @@ export class App {
     const layerSel = h('select', { title: 'Data layer on planets and the map' }) as HTMLSelectElement;
     for (const l of LAYERS) layerSel.appendChild(h('option', { value: l.id }, l.label));
     layerSel.addEventListener('change', () => setView('layer', layerSel.value as LayerId));
-    const toggle = (label: string, key: 'orbits' | 'labels' | 'hz' | 'wind' | 'clouds' | 'bloom', title: string) => {
+    const toggle = (label: string, key: 'orbits' | 'labels' | 'markers' | 'hz' | 'wind' | 'clouds' | 'bloom', title: string) => {
       const b = h('button', { title }, label) as HTMLButtonElement;
       const sync = () => b.setAttribute('aria-pressed', String(view[key]));
       b.addEventListener('click', () => {
@@ -242,7 +242,7 @@ export class App {
         'div',
         { class: 'viewbar panel' },
         h('div', { class: 'row wrap' }, modeBtn, bgSel),
-        h('div', { class: 'row wrap' }, toggle('Orbits', 'orbits', 'Orbit paths (O)'), toggle('Labels', 'labels', 'Names (N)'), toggle('HZ', 'hz', 'Habitable zones'), toggle('Wind', 'wind', 'Wind particles (W in orbit view)'), toggle('Clouds', 'clouds', 'Cloud layers'), toggle('Bloom', 'bloom', 'Glare/bloom')),
+        h('div', { class: 'row wrap' }, toggle('Orbits', 'orbits', 'Orbit paths (O)'), toggle('Labels', 'labels', 'Names (N)'), toggle('Dots', 'markers', 'Dots marking bodies too small to see'), toggle('HZ', 'hz', 'Habitable zones'), toggle('Wind', 'wind', 'Wind particles (W in orbit view)'), toggle('Clouds', 'clouds', 'Cloud layers'), toggle('Bloom', 'bloom', 'Glare/bloom')),
         h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Layer'), layerSel, h('button', { onclick: () => this.mapPanel.classList.toggle('hidden'), title: 'Climate map (M)' }, '🗺 Map')),
       ),
     );

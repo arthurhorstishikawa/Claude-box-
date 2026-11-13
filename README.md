@@ -103,7 +103,7 @@ and outlast the brightening Sun.
 | `,` `.` | Slower / faster time |
 | `V` | Realistic ↔ Enhanced brightness |
 | `M` | Climate map (click it to place a weather station) |
-| `O` `N` | Orbits, names |
+| `O` `N` | Orbits, names (the *Dots* button hides the body markers) |
 | `Del` | Delete the selected body |
 | `H` | Help |
 

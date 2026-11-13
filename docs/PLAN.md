@@ -174,8 +174,16 @@ and the generated hypsometry. Any world's terrain can be re-rolled from the insp
   all at grazing angles; blue sky, grey overcast, dark at night), carry three octaves of
   animated waves (swell, wind waves, chop) that fade before they alias, show sandy bottoms in
   the shallows and surf on the last metres before the shore. Beaches line gentle coasts; steep
-  slopes and cliffs are bare rock. Volumetric clouds take more ray-march steps when seen from
-  inside or below the layer, with wider per-pixel jitter, so grazing views do not band.
+  slopes and cliffs are bare rock. Volumetric clouds take more ray-march steps on long grazing
+  paths; where a step is longer than a cloud they use the layer's mean density (a pre-filtered
+  field) and drop the fine erosion detail, so distant cloud decks have smooth transparency —
+  noisy transparency in front of city lights at night used to turn into speckle and, with
+  bloom, glowing squares.
+* **Exposure metering** averages 6×6 taps per cell, so small bright things (city lights) count
+  by the area they cover. City-light clusters have pixel-wide edges and fade to their mean
+  coverage where the pattern is finer than a pixel; their shoreline is soft.
+* **Dots** toggle hides the markers that show where bodies too small to see are (and the
+  empire flags on labels).
 * **Land on rocky worlds:** quadtree LOD terrain (cube-sphere patches displaced on the GPU from the
   procedural elevation + detail noise), ocean surface, flight/walk camera near the ground.
 * **Fly into clouds:** volumetric cloud layers ray-marched from the live climate cloud field on

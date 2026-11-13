@@ -338,6 +338,8 @@ export class Renderer {
   // ------------------------------------------------------------------ markers and labels
 
   private updateMarkers(camPos: V3): void {
+    this.markers.visible = view.markers;
+    if (!view.markers) return;
     const bodies = this.sim.bodies;
     const pos = new Float32Array(bodies.length * 3);
     const col = new Float32Array(bodies.length * 3);
@@ -389,11 +391,11 @@ export class Renderer {
       if (el.textContent !== b.name) el.textContent = b.name;
       // Inhabited worlds fly their empire's flag (⚔ while it is at war).
       const emp = this.sim.agency.empireOf(b);
-      const flag = emp ? '#' + emp.color.toString(16).padStart(6, '0') : '';
+      const flag = emp && view.markers ? '#' + emp.color.toString(16).padStart(6, '0') : '';
       if (el.dataset.flag !== flag) {
         el.dataset.flag = flag;
         el.style.setProperty('--flag', flag);
-        el.classList.toggle('flag', !!emp);
+        el.classList.toggle('flag', !!emp && view.markers);
       }
       el.classList.toggle('war', !!emp && this.sim.agency.empires.atWar(emp));
       rel(b.pos, camPos, tmp);
